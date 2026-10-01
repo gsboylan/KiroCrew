@@ -32,7 +32,7 @@ from kiro_crew.metrics.sessions import (
 from kiro_crew.runtime_ownership import (
     PidRefcount,
     acquire_session_lease,
-    release_session_lease,
+    release_session_lease_was_last,
 )
 from kiro_crew.session_lifecycle import adopt_parked_queue
 from kiro_crew.start_priority import (
@@ -2431,6 +2431,13 @@ class SessionAllocationService:
             cast(Any, provider).memory_mode = memory_mode
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).member_context = member_context
+                # WHICH member, beside WHETHER this is a member session. The
+                # chat-runtime key needs the id so two members never share one
+                # process, and this is the only layer that has read the execution
+                # record. Empty for a session that is not a member's.
+                cast(Any, provider).member_id = (
+                    "" if execution is None or execution.member_id is None else execution.member_id
+                )
             try:
                 if self._deps.is_acp_provider(provider):
                     claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -2581,6 +2588,13 @@ class SessionAllocationService:
             cast(Any, provider).memory_mode = memory_mode
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).member_context = member_context
+                # WHICH member, beside WHETHER this is a member session. The
+                # chat-runtime key needs the id so two members never share one
+                # process, and this is the only layer that has read the execution
+                # record. Empty for a session that is not a member's.
+                cast(Any, provider).member_id = (
+                    "" if execution is None or execution.member_id is None else execution.member_id
+                )
             if memory_mode != "persistent":
                 resume_sid = None
             provider_switched = False
@@ -2710,15 +2724,28 @@ class SessionAllocationService:
                     # usually ``CancelledError``, and a bare await would take the
                     # next cancellation and re-raise before the kill is dispatched
                     # -- stranding the very lease this arm exists to give back.
-                    _release = asyncio.ensure_future(release_session_lease(provider))
+                    #
+                    # The release ANSWERS whether this start was the last holder,
+                    # and the kill is dispatched only when it was. On a SHARED chat
+                    # runtime a co-tenant may still be mid-turn on this process: a
+                    # kill dispatched there is refused by the ownership gate, so it
+                    # reclaims nothing and only logs a refusal, and the co-tenant's
+                    # own last release is what ends the process. Killing only at
+                    # zero is the same rule ``_shutdown_shared`` and the chat-share
+                    # start cleanup already follow. A non-sharing provider holds no
+                    # lease and the helper answers True, so this remains the
+                    # unconditional kill the unshared path takes.
+                    _release = asyncio.ensure_future(release_session_lease_was_last(provider))
                     while not _release.done():
                         try:
                             await asyncio.shield(_release)
                         except asyncio.CancelledError:
                             continue
+                    _was_last = True
                     with contextlib.suppress(Exception):
-                        _release.result()
-                    owner._dispatch_hard_kill(provider)
+                        _was_last = _release.result()
+                    if _was_last:
+                        owner._dispatch_hard_kill(provider)
                     if starting_pid is not None:
                         self._starting_pids.discard(starting_pid)
                     raise
@@ -2923,8 +2950,17 @@ class SessionAllocationService:
             # post-``start()`` stamp handler above holds one too and releases for
             # the same reason. A hard-kill site EARLIER than that start is
             # pre-lease and kills unconditionally.
-            await release_session_lease(provider)
-            owner._dispatch_hard_kill(provider)
+            #
+            # The release reports whether this was the LAST holder; the kill is
+            # dispatched only when it was. A failure after registering a session
+            # that JOINED a shared process must not signal that process while a
+            # co-tenant still holds it -- the gate would refuse the kill, so it
+            # reclaims nothing, and the surviving co-tenant's own last release is
+            # what ends it. A sole owner (every unshared start) is the last holder,
+            # so for that path the release is always followed by the kill.
+            _was_last = await release_session_lease_was_last(provider)
+            if _was_last:
+                owner._dispatch_hard_kill(provider)
             raise
         finally:
             if starting_pid is not None:

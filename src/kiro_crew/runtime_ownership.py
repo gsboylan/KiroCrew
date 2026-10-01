@@ -1230,6 +1230,45 @@ async def release_session_lease(provider: object) -> None:
         await holder.release_runtime_lease()  # type: ignore[attr-defined]
 
 
+async def release_session_lease_was_last(provider: object) -> bool:
+    """Release the session's lease and report whether the process is now killable.
+
+    The counting sibling of :func:`release_session_lease`, for a cleanup path that
+    must decide WHETHER to kill the process it just released. On a shared runtime
+    a release that is not the last leaves co-tenants mid-turn on the process, and
+    a kill dispatched there is REFUSED by :func:`authorize_runtime_kill` -- so the
+    process is reclaimed by neither this path nor, cleanly, any other: the kill is
+    merely a refused signal and a scary log line. This reads the lease table's own
+    answer and returns it so the caller can kill ONLY at zero, which is the same
+    rule :meth:`AcpSessionProvider._shutdown_shared` and the chat-share start
+    cleanup already follow.
+
+    Returns True when the kill may proceed -- this was the LAST lease (the table
+    handed the runtime back), or there was nothing to release (a non-ACP or
+    pre-lease shape, which a sole-owner teardown kills unconditionally).
+    Returns False when another lease still holds the process, so the caller must
+    NOT signal it: the surviving co-tenant's own last release is what ends it.
+
+    Reads the lease handle off the same holder :func:`release_session_lease` does,
+    clears it first so a second call cannot release a lease a later acquisition
+    now owns, and asks :meth:`RuntimeOwnership.release` for the one answer rather
+    than releasing and counting in two steps -- which would straddle another
+    session's arrival.
+    """
+    holder = _lease_holder(provider)
+    if holder is None:
+        return True
+    lease = getattr(holder, "_runtime_lease", None)
+    if not isinstance(lease, str):
+        return True
+    try:
+        holder._runtime_lease = None  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    runtime = await RUNTIME_OWNERSHIP.release(lease)
+    return runtime is not None
+
+
 def _reset_for_tests() -> None:
     """Drop all ownership state. Tests only -- there is one registry per gateway."""
     RUNTIME_OWNERSHIP._entries.clear()
@@ -1257,6 +1296,7 @@ __all__ = [
     "release_runtime_teardown",
     "release_runtime_tenancy",
     "release_session_lease",
+    "release_session_lease_was_last",
     "session_keys_bound_to_pid",
     "tenancy_epoch",
 ]
