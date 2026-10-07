@@ -226,7 +226,25 @@ def _url_payload_command(n: int) -> str:
 #: text inflated per link and per call is capped so the extra scan stays that of
 #: a 16 KiB plain text. One route, the decode helpers, their comment. No pass
 #: widened and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_740
+#:
+#: Set for the git-publish floor's command-position walker
+#: (``_is_git_push_via_normalizer``), the ONE place the rule lives (no separate
+#: pre-verb pass). It tokenizes quote- and operator-aware
+#: (``_command_structured_tokens``: an unquoted control operator is its own word,
+#: one inside a quoted word stays data) and finds ``git`` ONLY in command
+#: position -- the first word of a simple command, after stepping over control
+#: operators, env assignments, redirections (operator + operand), command
+#: wrappers (``_COMMAND_WRAPPER_PROGRAMS``: ``env``/``timeout``/``nice`` ...) and
+#: a here-doc body start. It denies when the sought subcommand resolves to
+#: ``push`` or -- fail-closed -- is not a strict literal
+#: (``_STRICT_PLAIN_SUBCOMMAND_RE``: ``[A-Za-z0-9_./=:-]``), since the shell can
+#: then rewrite it into a push (``git $@ push``, ``git -C . $@ push``). Requiring
+#: command position keeps ``git`` as search data allowed (``grep -n git *.md``,
+#: ``rg 'git|push' src``, ``git grep -E 'foo|git' --``). The accepted cost is
+#: over-refusal of a command whose subcommand position is an expansion -- a loud,
+#: recoverable denial. No new lexer; it reuses the shared normalizer helpers and
+#: ``_GIT_ARG_FLAGS``.
+_PACKAGE_LINE_BUDGET = 28875
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

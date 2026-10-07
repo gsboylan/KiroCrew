@@ -93,12 +93,17 @@ from .inline_payload import (
 )
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
+    _COMMAND_SEPARATOR_TOKENS,
+    _COMMAND_WRAPPER_PROGRAMS,
+    _GIT_ARG_FLAGS,
+    _LOCAL_ASSIGN_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
     _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
+    _STRICT_PLAIN_SUBCOMMAND_RE,
     _argv_programs,
     _backtick_closer,
     _cut_at_operator,
@@ -3459,114 +3464,154 @@ def _is_git_publish(text_lower: str) -> bool:
        command-substitution glue-evasion (e.g. ``git$(echo ' ')push``);
        ``_GIT_PUBLISH_SUBST_PROGRAM_RE`` catches expansion-produced program
        names (``$(echo git) push``, ``${GIT} push``, ``$GIT push``).
-    2. **Normalizer second-pass:** ``normalize_shell_command`` strips quotes
-       and empty-string concatenation so evasions like ``"git" push``,
-       ``g""it push``, or ``'g'it push`` are resolved to their true tokens.
+    2. **Normalizer pass:** ``normalize_shell_command`` strips quotes and
+       empty-string concatenation so evasions like ``"git" push``,
+       ``g""it push``, or ``'g'it push`` are resolved to their true tokens; the
+       walker then reads the subcommand position. If the subcommand token is a
+       publish it matches, and -- fail-closed -- if it is a word the shell can
+       rewrite (not a strict literal: ``git ${UNSET} push``, ``git -C . $@
+       push``), the command is treated as a possible publish for the floor to
+       judge. See :func:`_is_git_push_via_normalizer`.
 
     Does NOT match ``git stash push``, ``git commit -m '...push...'``,
     ``git log --grep push``, etc.
 
     Operates on an already-lowercased string.
     """
-    # Pass 1: regex fast-path
+    # Pass 1: regex fast-path.
     if (
         _GIT_PUBLISH_RE.search(text_lower)
         or _GIT_PUBLISH_GLUE_RE.search(text_lower)
         or _GIT_PUBLISH_SUBST_PROGRAM_RE.search(text_lower)
     ):
         return True
-
-    # Pass 2: normalizer-based detection (catches quote evasions like
-    # "git" push, g""it push, 'g'it push)
-    return _is_git_push_via_normalizer(text_lower)
-
-
-# Git global flags that consume a separate argument token (appear between
-# `git` and the subcommand).
-_GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+    # Pass 2: quote-evasion + fail-closed command-position walk (the single
+    # place the rule lives; no separate pre-verb pass).
+    if _is_git_push_via_normalizer(text_lower):
+        return True
+    return False
 
 
 def _is_git_push_via_normalizer(text_lower: str) -> bool:
-    """Normalizer-based git push detection (second pass).
+    """Fail-closed git-publish detection on a quote/operator-aware token stream.
 
-    Tokenizes the command via ``normalize_shell_command``, then checks if
-    any token sequence resolves to ``git`` followed by ``push`` as the
-    subcommand (skipping flags and their arguments, and skipping empty or
-    whitespace-only words in the subcommand seek, which git never resolves
-    a command name from.)
-
-    Avoids false positives on ``git stash push`` by requiring ``push`` to
-    be the FIRST non-flag token after ``git`` (the subcommand position).
+    Tokenizes with ``_command_structured_tokens`` (an unquoted control operator
+    is its own word; one inside a quoted word stays data), then finds ``git``
+    ONLY in command position -- the first word of a simple command, after
+    stepping over control operators, env assignments, redirections and command
+    wrappers. So ``git`` as a search argument (``grep -n git *.md``,
+    ``rg 'git|push' src``) is never read as a program. It denies when the sought
+    subcommand resolves to ``push`` OR -- fail-closed -- is not a strict literal
+    (the shell can then rewrite it into a push: ``git $@ push``). A real plain
+    ``git push`` is caught by the raw-text pass; this is the one detection place,
+    no pre-verb pass. See the spec for the full note.
     """
+    # Quote/operator-aware tokens (see the module helper): an unquoted operator
+    # is its own word, one inside a quote stays data -- so COMMAND POSITION is
+    # knowable and ``git`` as search data is never read as a program.
     try:
-        tokens = _shell_normalizer.normalize_shell_command(text_lower)
+        tokens = _shell_normalizer._command_structured_tokens(text_lower)
     except Exception:
         return False
 
     if not tokens:
         return False
 
-    # Glued operators are not part of the word: ``(git`` is the git program and
-    # ``push)`` is the push subcommand. But these tokens come from
-    # ``normalize_shell_command``, which has ALREADY tokenized and dequoted, so
-    # punctuation surviving inside a token is part of the WORD -- and cutting
-    # there truncated a legal executable path (``/opt/my(dir)/git`` ->
-    # ``/opt/my``, whose basename is not ``git``), which NARROWED detection and
-    # let a protected push through. Replacing the token was therefore not the
-    # widen-only step its previous comment claimed.
-    #
-    # Both spellings are consulted instead, so the claim actually holds: a token
-    # counts when EITHER its raw form or its operator-cut form resolves to the
-    # word. That is a superset of both readings, and detection can only ever
-    # grow -- the allow/deny decision still rests with
-    # ``_is_push_to_protected_branch``.
     def _resolves_to(token: str, word: str) -> bool:
-        for candidate in (token, _cut_at_operator(token)):
-            if candidate == word or os.path.basename(candidate) == word:
-                return True
-        return False
+        return token == word or os.path.basename(token) == word
 
+    def _is_redirection(token: str) -> bool:
+        return bool(_REDIRECT_START_RE.match(token))
+
+    # Find ``git`` only in command position: index 0, or after a control
+    # operator / here-doc body start, having stepped over env assignments,
+    # redirections (operator + operand) and command wrappers (which run the
+    # following command). ``git`` anywhere else is an argument, never a push.
     i = 0
+    at_command_pos = True
     while i < len(tokens):
         token = tokens[i]
-        # Check if this token resolves to "git"
+        if token in _COMMAND_SEPARATOR_TOKENS:
+            at_command_pos = True
+            i += 1
+            continue
+        # A here-document body MAY be an executed script (``sh <<EOF ... git
+        # push ... EOF``): fail-closed, step over ``<<`` + delimiter and treat
+        # the body's first word as a command position.
+        if token in ("<<", "<<<"):
+            i += 1
+            if i < len(tokens) and tokens[i] not in _COMMAND_SEPARATOR_TOKENS:
+                i += 1  # the delimiter word
+            at_command_pos = True
+            continue
+        if not at_command_pos:
+            i += 1
+            continue
+        # --- at a command position ---
+        # An empty word git rejects as a command name does not consume position.
+        if not token.strip():
+            i += 1
+            continue
+        # Env assignment (``VAR=val git``): step over, stay at command position.
+        if _LOCAL_ASSIGN_RE.match(token):
+            i += 1
+            continue
+        # Redirection: consume operator + target operand (``>$x git`` -> ``git``
+        # stays command position).
+        if _is_redirection(token):
+            i += 1
+            if (
+                i < len(tokens)
+                and not tokens[i].startswith("-")
+                and tokens[i] not in _COMMAND_SEPARATOR_TOKENS
+            ):
+                i += 1
+            continue
+        # Wrapper (``timeout 5 git``, ``env -C /tmp git``, ``nice -n 5 git``,
+        # ``exec -a foo git``): command position carries past it, its flags and
+        # one bare operand to the wrapped command word.
+        if _program_basename(token) in _COMMAND_WRAPPER_PROGRAMS:
+            i += 1
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 1
+            if (
+                i < len(tokens)
+                and not _resolves_to(tokens[i], "git")
+                and tokens[i] not in _COMMAND_SEPARATOR_TOKENS
+                and not _LOCAL_ASSIGN_RE.match(tokens[i])
+                and _program_basename(tokens[i]) not in _COMMAND_WRAPPER_PROGRAMS
+            ):
+                i += 1
+            continue
         if _resolves_to(token, "git"):
-            # Skip global flags and their arguments to find the subcommand.
-            #
-            # A zero-width or whitespace-only word is also skipped.  It is a
-            # real argv element the shell hands over, and git does NOT ignore
-            # it -- git takes it as its command name and
-            # exits.  Skipping it is deliberate fail-closed OVER-detection: it
-            # widens only DETECTION, and a spelling it newly reaches either
-            # fails to run at all (git rejects the zero-width command name) or
-            # was already reached in its adjacent spelling, so no runnable
-            # push gains an escape.  What the floor DOES with a newly-detected
-            # spelling is the ungated anti-obfuscation branch, not the
-            # protected-branch rule: ``_git_push_args`` anchors on the raw
-            # split and does not skip the empty word, so the parse fails and
-            # ``_git_publish_floor_tags`` denies unconditionally
-            # (``_GIT_PUBLISH_UNGATED``) -- the right treatment for a spelling
-            # git itself cannot run.  ``str.strip()``'s whitespace set is
-            # wider than POSIX IFS (NBSP, U+2000..200A, ...) and deliberately
-            # so: every extra character it treats as skippable is still a word
-            # git takes as its command name and rejects, and a skipped token
-            # can never be the subcommand token, so the breadth only ever ADDS
-            # detection -- do not narrow it to a literal space/tab set.  No
-            # matching guard is needed in program position: a zero-width word
-            # never resolves to the program word (``_resolves_to`` cannot
-            # yield ``git`` from it), so the outer loop already steps past it.
+            # Seek the subcommand: skip flags and their values, a redirection and
+            # its operand, and an empty word git rejects (fail-closed).
             j = i + 1
             while j < len(tokens):
+                if tokens[j] in _COMMAND_SEPARATOR_TOKENS:
+                    j = len(tokens)  # command ended with no subcommand word
+                    break
                 if not tokens[j].strip():
                     j += 1  # zero-width/whitespace-only word
+                elif _is_redirection(tokens[j]):
+                    j += 1  # redirection operator ...
+                    if j < len(tokens) and not tokens[j].startswith("-"):
+                        j += 1  # ... and its target operand
                 elif tokens[j] in _GIT_ARG_FLAGS:
-                    j += 2  # skip flag + its argument
+                    j += 2  # separated value-option + its value
                 elif tokens[j].startswith("-"):
-                    j += 1  # skip simple flag
+                    j += 1  # simple flag or attached option value
                 else:
                     break
-            if j < len(tokens) and _resolves_to(tokens[j], "push"):
-                return True
+            if j < len(tokens):
+                subcommand = tokens[j]
+                if _resolves_to(subcommand, "push"):
+                    return True
+                # Fail-closed: a non-strict-literal subcommand the shell can
+                # rewrite into a push is treated as a possible publish (spec).
+                if not _STRICT_PLAIN_SUBCOMMAND_RE.fullmatch(subcommand):
+                    return True
+        at_command_pos = False  # past the command word: the rest is argument
         i += 1
     return False
 

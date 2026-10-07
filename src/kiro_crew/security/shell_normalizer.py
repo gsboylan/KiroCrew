@@ -2918,8 +2918,34 @@ def _split_shell_words(segment: str) -> list[str]:
     return words
 
 
-# The product name as a WHOLE program name (bare or the tail of a path), which is
-# what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
+# Git global flags that consume a separate argument token (they appear between
+# ``git`` and the subcommand). Read by ``argv_floor._is_git_push_via_normalizer``'s
+# subcommand seek. These are the git global options that take a SEPARATE value
+# word; a value given with ``=`` (``--git-dir=/x``) is self-contained and is
+# matched by the ``=`` check in the seek, not by membership here, so an option's
+# value word is never mistaken for the subcommand.
+_GIT_ARG_FLAGS = frozenset(
+    {
+        "-c",
+        "-C",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+    }
+)
+
+#: A normalized git subcommand token is a verifiable plain word only if it fully
+#: matches this strict literal pattern: ASCII letters, digits and ``_ . / = :
+#: -``. Anything else -- a surviving ``$`` expansion, backtick, glob, brace or
+#: other metacharacter -- means the shell can rewrite the subcommand, so the git
+#: command cannot be verified as a non-publish. Used by the argv-floor walker.
+_STRICT_PLAIN_SUBCOMMAND_RE = re.compile(r"[A-Za-z0-9_./=:-]+")
+
+#: Control operators that separate commands. A normalized token with one glued
+#: in (``ok;git``, ``fetch;git``, ``x&git``) is really two command words; the
+#: argv-floor walker splits on these so each command's program and subcommand
+#: sit at their own positions.
+_CONTROL_OPERATOR_SPLIT_RE = re.compile(r"[;&|\n]+")
 
 
 def _is_self_program(token: str) -> bool:
@@ -3755,6 +3781,66 @@ def _shell_tokens(cmd: str) -> list[str]:
         # Unbalanced quotes or other parse errors — fall back to basic split.
         tokens = [t.strip("\"'\\") for t in cmd.split()]
     # Strip empty-string concatenation artifacts: ca""t -> cat, g''it -> git
+    return [_EMPTY_QUOTE_RE.sub("", token) for token in tokens]
+
+
+#: Control-operator tokens that ``_command_structured_tokens`` emits as their own
+#: words. A command word (program or subcommand) is the token at index 0 or the
+#: one right after one of these, so the git-publish walker can require COMMAND
+#: POSITION instead of matching ``git`` anywhere in the stream.
+_COMMAND_SEPARATOR_TOKENS = frozenset({";", "&", "&&", "|", "||", "\n", ";;", "|&"})
+
+#: Programs that RUN the command named after them, so command position carries
+#: past the wrapper (and its own options / one operand) to the wrapped command
+#: word -- ``timeout 5 git push``, ``env -C /tmp git push``, ``nice -n 5 git
+#: push`` all still reach ``git`` as a command word. Deliberately the common
+#: POSIX runners; a name missing here only costs OVER-reach via another detector,
+#: never an under-detection of a plain ``git push`` (caught in the raw-text pass).
+_COMMAND_WRAPPER_PROGRAMS = frozenset(
+    {
+        "env",
+        "eval",
+        "exec",
+        "command",
+        "builtin",
+        "time",
+        "timeout",
+        "nice",
+        "nohup",
+        "stdbuf",
+        "setsid",
+        "ionice",
+        "chrt",
+        "sudo",
+        "doas",
+        "xargs",
+    }
+)
+
+
+def _command_structured_tokens(cmd: str) -> list[str]:
+    """Tokenize *cmd* QUOTE- and OPERATOR-aware for command-position analysis.
+
+    Like :func:`_shell_tokens` it removes quotes, de-escapes and collapses empty-
+    quote concatenation, but it uses ``shlex``'s ``punctuation_chars`` so an
+    UNQUOTED control operator (``;`` ``&`` ``&&`` ``|`` ``||``) becomes its OWN
+    token while an operator INSIDE a quoted word stays part of that word
+    (``'foo|git'`` is one token, ``ok;git`` is three). That boundary is what lets
+    a caller tell a command word from an argument that merely contains ``git``.
+
+    On a parse failure (unbalanced quotes) it falls back to the same degraded
+    whitespace split :func:`_shell_tokens` uses, so a hostile unterminated quote
+    still yields a view rather than none.
+    """
+    if not cmd or not cmd.strip():
+        return []
+    cmd = _decode_shell_quoted_literals(cmd)
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = [t.strip("\"'\\") for t in cmd.split()]
     return [_EMPTY_QUOTE_RE.sub("", token) for token in tokens]
 
 
