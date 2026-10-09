@@ -226,7 +226,17 @@ def _url_payload_command(n: int) -> str:
 #: text inflated per link and per call is capped so the extra scan stays that of
 #: a 16 KiB plain text. One route, the decode helpers, their comment. No pass
 #: widened and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_740
+#:
+#: Raised for the recursive-force ``rm`` deletion floor in the ``rm_floor.py`` sibling
+#: module: an argv-structural gate that reads the ``rm`` command's own argv (flags in
+#: any position/spelling, the ``$HOME``/``~``/glob targets, brace-expanded flags and
+#: operands), a UNION with the two catalog regexes kept LIVE as a fail-closed
+#: deny-net. It carries the GPT 6.1 over-refusal fixes to the floor: a
+#: piped/compound substitution body and a multi-operand producer body left
+#: unresolved, a read-only ``git`` search's arguments read as data, a case-variant
+#: home sibling kept distinct on a case-sensitive filesystem, and a bounded
+#: parameter-expansion rejoin.
+_PACKAGE_LINE_BUDGET = 32_720
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
