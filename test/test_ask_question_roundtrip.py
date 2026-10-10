@@ -1434,23 +1434,26 @@ class TestErrorCodes:
     def test_the_ratchet_can_actually_fail(self) -> None:
         """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-        36 = the 20 pinned after the owner-denial migration, the answer route's
+        39 = the 20 pinned after the owner-denial migration, the answer route's
         ``answers_too_long``, one additional reason-bearing ``question_not_found``
-        response, plus fourteen coded response sites for the blocking MCP
-        ``ask_question`` routes. The five audited authorization denials construct
+        response, fourteen coded response sites for the blocking MCP
+        ``ask_question`` routes, plus the three the wait route gained when it
+        began reading an optional ``{slice_secs}`` body (``invalid_json``,
+        ``invalid_body``, ``invalid_slice_secs``). The five audited authorization denials construct
         their literal response at the call site while ``_denied`` only records the
         shared SEL event, so every refusal remains visible to the universal
         machine-code ratchet. Open also owns ``invalid_json``, ``invalid_body``,
         ``slot_not_found``, ``invalid_questions``, ``duplicate_question_key``,
         ``invalid_ask_id``, and ``agent_ask_capacity``; wait and withdraw each own
         ``question_not_found`` because a genuinely missing ask is not an
-        authorization denial. Wait reads no body, so it has no ``invalid_body``.
+        authorization denial. Wait reads an OPTIONAL body (a bare POST still
+        works), so it owns ``invalid_body`` for a non-object body too.
         The earlier drop from 21: the non-owner ``403`` is not written out here —
         its ``{"error": "forbidden", "code": "owner_only"}`` body is produced by
         ``handlers._shared._owner_denial_response``. The wire contract is unchanged.
         """
         coded = [f for f in self._findings() if f.bucket == "compliant"]
-        assert len(coded) == 36, f"scanner reached {len(coded)} coded sites, expected 36"
+        assert len(coded) == 39, f"scanner reached {len(coded)} coded sites, expected 39"
         assert all(f.code_value for f in coded)
 
     # -- POST /api/ask-question (the MCP tool's leg) --

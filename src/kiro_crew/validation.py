@@ -1554,13 +1554,35 @@ SPAWN_RELEASE_SCHEMA = ToolSchema(
     ],
 )
 
+# Twice the configured sub-agent ceiling of 64; batches drain in waves, and
+# a parked call retains one error line per refused entry.
+SPAWN_SUB_AGENTS_BATCH_MAX = 128
+
+# One ``agents[]`` member. Validated as its own schema so an unknown key is
+# refused before anything is spawned: the parked ``_SubAgentsStep`` retains
+# the members until every one is submitted, so every field it can carry must
+# be one with a bound. ``prompt`` is not required here -- the handler skips a
+# member with an empty prompt -- and both strings are clamped, not refused,
+# which is what the handler did before the bound moved into the schema.
+SPAWN_SUB_AGENTS_AGENT_ITEM_SCHEMA = ToolSchema(
+    tool_name="spawn_sub_agents.agents[]",
+    fields=[
+        FieldSpec("prompt", str, max_len=MAX_MEDIUM_STRING, clamp_to_max=True),
+        FieldSpec("agent_or_mode", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
+    ],
+)
+
 SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
     tool_name="spawn_sub_agents",
     fields=[
-        # Each item is a dict with prompt (required, max MAX_MEDIUM_STRING) and
-        # agent_or_mode (optional, max MAX_SHORT_STRING). Per-field validation
-        # enforced in handler (no item_schema support in FieldSpec).
-        FieldSpec("agents", list, required=True, item_type=dict),
+        FieldSpec(
+            "agents",
+            list,
+            required=True,
+            item_type=dict,
+            max_items=SPAWN_SUB_AGENTS_BATCH_MAX,
+            item_schema=SPAWN_SUB_AGENTS_AGENT_ITEM_SCHEMA,
+        ),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
         # Context groups, as on spawn_run: batch-wide, all default True.
         FieldSpec("include_memory", bool, default=True),
@@ -1965,6 +1987,11 @@ _ASK_MAX_ANSWER_LEN = (
 #: keepalive between slices resets the ACP tool-stall watchdog long before its
 #: 600s; long enough that an idle card costs a request every ~20s.
 ASK_WAIT_SLICE_SECS = 20
+
+#: The deferred step's long-poll slice. At DEFERRED_PARKED_MAX cards over
+#: DEFERRED_STEP_WORKERS workers, ceil(64 / 8) * 2 = 16s is far below the
+#: dashboard's _AGENT_ASK_STALE_SECS (120s); the 20s slice stays the server ceiling.
+ASK_DEFERRED_SLICE_SECS = 2
 
 
 def format_ask_answers(pairs: Iterable[tuple[str, str]]) -> str:

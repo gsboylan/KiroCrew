@@ -659,18 +659,35 @@ async def api_agent_ask_open(request: web.Request) -> web.Response:
 
 
 async def api_agent_ask_wait(request: web.Request) -> web.Response:
-    """POST /api/agent-ask/{ask_id}/wait — wait one fixed slice for the answer.
+    """POST /api/agent-ask/{ask_id}/wait — wait one bounded slice for the answer.
 
-    No body. Responds ``{status: "pending"}`` or the final outcome
-    ``{status, questions, answers}``; 404 once dropped or for another session.
+    Optional body: ``{slice_secs: int}``, clamped to the server's ceiling.
+    Responds ``{status: "pending"}`` or ``{status, questions, answers}``;
+    404 once dropped or for another session.
     """
     state: DashboardState = request.app["state"]
     session_key = await _attested_session(request)
     if session_key is None:
         return _unattested(request, "agent_ask_wait")
+    slice_secs = ASK_WAIT_SLICE_SECS
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+            )
+        slice_secs = body.get("slice_secs", ASK_WAIT_SLICE_SECS)
+        if not isinstance(slice_secs, int) or isinstance(slice_secs, bool):
+            return web.json_response(
+                {"error": "slice_secs must be an integer", "code": "invalid_slice_secs"}, status=400
+            )
+        slice_secs = max(1, min(ASK_WAIT_SLICE_SECS, slice_secs))
     ask_id = request.match_info["ask_id"]
     ask = state._agent_asks.get(ask_id)
-    outcome = await state.wait_agent_ask(ask_id, session_key, ASK_WAIT_SLICE_SECS)
+    outcome = await state.wait_agent_ask(ask_id, session_key, slice_secs)
     if outcome is None:
         if ask is not None and ask["session_key"] != session_key:
             message = "no such ask for this session"
