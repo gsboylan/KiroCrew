@@ -474,14 +474,25 @@ def wake_brief(*, item_id: str, status: str) -> str:
     return f"[work-ledger wake] item={item_id} status={status or '(unset)'}"
 
 
-def stall_brief(*, item_id: str, status: str | None) -> str:
+def stall_brief(*, item_id: str, status: str | None, reason: str | None = None) -> str:
     """Text for a SILENCE wake, marked as such.
 
     A different shape from :func:`wake_brief` because it says the opposite thing:
-    not "this worker reported" but "this worker has reported nothing and is no
-    longer running". A conductor that could not tell them apart would go looking
-    for a report that does not exist.
+    not "this worker reported" but "this worker has reported nothing and is not
+    running". A conductor that could not tell them apart would go looking for a
+    report that does not exist.
 
-    Structural only, for the reason :func:`wake_brief` gives.
+    *reason* is the stop reason the item's last report carried, and it changes what
+    the conductor does about the silence: a worker that said it was parking itself
+    (``waiting``) and then overran the window wants a resume or a probe, while one
+    that went quiet mid-``progress`` wants re-dispatching. Omitted from the line when
+    the last report carried none, so the common case reads as it always has.
+
+    Structural only, for the reason :func:`wake_brief` gives. ``last_reason`` rather
+    than ``reason``, because this line's own ``reason=stall`` names the KIND of wake.
     """
-    return f"[work-ledger wake] item={item_id} reason=stall last_status={status or '(none yet)'}"
+    tail = f" last_reason={reason}" if reason else ""
+    return (
+        f"[work-ledger wake] item={item_id} reason=stall "
+        f"last_status={status or '(none yet)'}{tail}"
+    )

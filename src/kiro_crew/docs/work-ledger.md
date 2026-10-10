@@ -184,12 +184,17 @@ new report releases it; the conductor's own writes do not.
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` pull its `work-ledger` loop forward to within seconds. `progress`
 does not, `waiting` included — which is the point of having it: a worker that
-stops to wait records the pause and costs its conductor nothing. A worker turn
-that ends having reported nothing wakes nobody, and neither does a worker's
-session closing. What covers a worker that crashed or went silent is the item's
-own `stale` and `orphaned` flags, read on the conductor's ordinary patrol tick;
-those also cover a worker whose process died with its session still open, which
-no wake ever did.
+stops to wait records the pause where its conductor reads it and spends no turn
+doing so. A worker turn that ends having reported nothing wakes nobody, and
+neither does a worker's session closing. What covers a worker that crashed or
+went silent is the item's own `stale` and `orphaned` flags, read on the
+conductor's ordinary patrol tick; those also cover a worker whose process died
+with its session still open, which no wake ever did.
+
+`waiting` does not stop the staleness clock. An item quiet past the window is
+flagged `stale` whatever its last report said, and the stall wake carries that
+report's reason (`last_reason=waiting`), which is what tells a conductor to
+resume a worker that overran its wait rather than re-dispatch work that died.
 
 Reports belong at real milestones, not on a timer.
 `summary` is capped at 500 characters.

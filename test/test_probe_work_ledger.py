@@ -364,6 +364,20 @@ class TestBriefs:
         assert "reason=stall" in text
         assert "last_status=(none yet)" in text
 
+    def test_a_stall_brief_names_the_stop_reason_the_last_report_carried(self):
+        """What the conductor does about the silence depends on it.
+
+        A worker that said it was parking itself and then overran the window wants a
+        resume; one that went quiet mid-``progress`` wants re-dispatching. So the
+        reason rides on the line, under ``last_reason`` -- ``reason=`` already names
+        the KIND of wake, and a second ``reason=`` would make the line ambiguous.
+        """
+        parked = lw.stall_brief(item_id=ITEM, status="progress", reason="waiting")
+        assert "last_reason=waiting" in parked
+        assert parked.count("reason=stall") == 1
+        bare = lw.stall_brief(item_id=ITEM, status="progress")
+        assert "last_reason" not in bare, "a report with no reason reads as it always has"
+
 
 class TestLivenessIsNotReimplemented:
     """The conjunction belongs to the store, and this pins that it stays there."""
@@ -402,8 +416,12 @@ def _create(title: str = "port the gate") -> str:
     return str(result["item"].item_id)
 
 
-def _report(item_id: str, status: str, summary: str = "moving") -> None:
-    work_ledger.apply_worker_report(CONDUCTOR, item_id, status=status, summary=summary)
+def _report(
+    item_id: str, status: str, summary: str = "moving", reason: "str | None" = None
+) -> None:
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item_id, status=status, summary=summary, reason=reason
+    )
 
 
 class _Job:
@@ -654,6 +672,24 @@ def test_a_progress_report_advances_the_epoch_without_waking():
     tick = _observe(_probe(), _ctx())
     assert tick.epoch
     assert [o for o in tick.observations if item in o.brief] == []
+
+
+def test_a_parked_workers_stall_wake_carries_its_stop_reason(monkeypatch):
+    """The item's own ``reason`` reaches the conductor through the stall observation.
+
+    ``waiting`` does not stop the staleness clock -- ``is_stale`` is the store's and
+    reads no reason -- so a worker that parks itself and overruns the window is
+    flagged like any other quiet worker. What the reason changes is what the
+    conductor is told, and so what it does: resume the worker, not re-dispatch work
+    that died.
+    """
+    _open_ledger()
+    item = _create()
+    _report(item, "progress", summary="in a wait", reason="waiting")
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    briefs = _briefs(_observe(_probe(running=False), _ctx()))
+    assert "reason=stall" in briefs
+    assert "last_reason=waiting" in briefs
 
 
 def test_a_conductor_written_event_never_wakes_its_own_author():

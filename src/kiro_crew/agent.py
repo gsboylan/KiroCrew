@@ -5621,11 +5621,13 @@ arguments: which item you are bound to is resolved from your own session.
 stopping before you stop.** `blocked`, `question` and `done` wake it. `progress`
 does not. A turn of yours that ends having reported nothing wakes nobody — it is
 not read as a result, and nothing is inferred from it. So when you park yourself
-and expect to be resumed, report `progress` with `reason: waiting`: that records
-the pause on your item without spending a conductor turn, and your silence then
-reads as intended rather than as work that died. If you do die or go silent, your
-item's own `stale` and `orphaned` flags surface it on your conductor's next
-patrol tick; that is the backstop, not something to rely on as a signal.
+and expect to be resumed, report `progress` with `reason: waiting`: it spends no
+conductor turn, and it puts the pause on your item where your conductor reads it
+instead of leaving a gap it has to guess at. It does not exempt you from the
+clock: stay quiet past the staleness window and your item is flagged `stale`
+either way, and the flag then carries `waiting` so your conductor knows to resume
+you rather than re-dispatch the work. Those flags are the backstop for a worker
+that died, which is why nothing about them changes when you say you are waiting.
 
 **Your `done` is a claim, not an acceptance.** Your conductor runs the acceptance
 evaluator over the item's own bar and decides. You have no parameter that writes

@@ -335,6 +335,7 @@ class WorkLedgerProbe(irq.Probe):
                         ledger_wake.stall_brief(
                             item_id=item.item_id,
                             status=item.status,
+                            reason=item.reason,
                         ),
                         irq.ResetsOn.NEVER,
                     )
