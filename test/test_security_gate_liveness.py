@@ -226,7 +226,22 @@ def _url_payload_command(n: int) -> str:
 #: text inflated per link and per call is capped so the extra scan stays that of
 #: a 16 KiB plain text. One route, the decode helpers, their comment. No pass
 #: widened and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_740
+#:
+#: Raised again, from 28,740, for the bare-kill window's runtime-synthesis search:
+#: a substitution body whose lookup target is assembled from a single-literal
+#: ``printf``/``echo`` substitution or a brace expansion is folded and matched for
+#: the name before the search. The constant-output fold reuses the existing
+#: ``_static_substitution_output`` resolver (guarded to a single plain literal, so
+#: no second printf model), and an over-cap brace product is matched exactly by a
+#: segment automaton that never forms the whole product (one group whose own
+#: product overflows a wider per-group bound, or a word whose total alternative
+#: characters exceed the walk budget, is the pathological fail-closed case; the
+#: fold is quote-aware (a single-quoted substitution is inert) and only unquoted
+#: braces expand, and the over-cap check runs the de-bracketed and resolved-word
+#: views too); all of a body's expansion work shares one cumulative character
+#: budget. No unresolvable operand is failed closed, no pass widened and no
+#: threshold moved.
+_PACKAGE_LINE_BUDGET = 29_042
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

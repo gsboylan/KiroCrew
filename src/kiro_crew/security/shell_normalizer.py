@@ -2532,6 +2532,262 @@ def _resolved_word_view(word: str) -> str:
     return _debracket(_EMPTY_SUBST_RE.sub("", _resolve_param_defaults(word)))
 
 
+# An innermost ``$(printf ...)`` / ``$(echo ...)`` (or backtick form) whose
+# arguments hold no ``$``, backtick or paren: its output is a constant.
+_CONST_OUTPUT_SUBST_RE = re.compile(
+    r"\$\(\s*((?:printf|echo)(?:\s[^()$`]*)?)\)|`\s*((?:printf|echo)(?:\s[^()$`]*)?)`"
+)
+# Output that cannot be spliced back as the same text: it would re-open quoting
+# or start an expansion bash never performs on substitution output.
+_FOLD_UNSPLICEABLE_RE = re.compile(r"[\"'`$\\;|&()<>{}]")
+
+
+def _fold_const_output_substitutions(body: str, resolve: "Callable[[str], str]") -> str:
+    """*body* with each constant-output ``printf``/``echo`` substitution replaced by its output.
+
+    *resolve* maps a substitution body to its static output, ``"\\x00"`` when it
+    has none.  Innermost-first to a bounded fixpoint, so the folded text
+    tokenizes as the word bash builds and the local-assignment resolver carries
+    it on (``x=$(printf a); ${x}b``).  Output that cannot be spliced as the same
+    text leaves its substitution unfolded, and a substitution the shell quoted
+    INERT (inside single quotes) is never folded -- it is literal text there.
+    """
+    mask = _quote_mask(body)
+
+    def fold(match: "re.Match[str]") -> str:
+        if mask[match.start()] == "'":
+            return match.group(0)
+        out = resolve(match.group(1) or match.group(2))
+        if out == "\x00" or _FOLD_UNSPLICEABLE_RE.search(out):
+            return match.group(0)
+        return out
+
+    for _ in range(8):
+        folded = _CONST_OUTPUT_SUBST_RE.sub(fold, body)
+        if folded == body:
+            break
+        body = folded
+        mask = _quote_mask(body)
+    return body
+
+
+_NUMERIC_BRACE_RANGE_RE = re.compile(r"\{-?[0-9]+\.\.-?[0-9]+(?:\.\.-?[0-9]+)?\}")
+
+
+def _name_match_step(name: str, matched: int, char: str) -> int:
+    """Substring automaton: longest prefix of *name* that is a suffix of what we
+    have after appending *char* to its first *matched* characters."""
+    candidate = name[:matched] + char
+    for width in range(min(len(candidate), len(name)), 0, -1):
+        if candidate.endswith(name[:width]):
+            return width
+    return 0
+
+
+def _brace_word_segments(
+    word: str, expand: "Callable[[str], list[str] | None]"
+) -> "list[list[str]] | None":
+    """*word* as a list of choice-sets -- a literal run is a one-string set, each
+    top-level ``{...}`` group its own alternatives -- or None when a group's own
+    product overflows (a pathological nested brace, failed closed by the caller).
+
+    Numeric ranges are collapsed to one representative first: the name holds no
+    digit, so no name match can straddle a range and the choice of number cannot
+    change the verdict, while an overflowing numeric range (``{3000..3999}``)
+    would otherwise be unreadable.
+    """
+    word = _NUMERIC_BRACE_RANGE_RE.sub("0", word)
+    segments: "list[list[str]]" = []
+    literal: list[str] = []
+    depth, start = 0, -1
+    for i, ch in enumerate(word):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                group = word[start : i + 1]
+                if i > start + 1:
+                    alternatives = expand(group)
+                    if alternatives is None:
+                        return None
+                    if literal:
+                        segments.append(["".join(literal)])
+                        literal = []
+                    segments.append(alternatives)
+                else:
+                    literal.append(group)
+                start = -1
+        elif depth == 0:
+            literal.append(ch)
+    if depth > 0:  # an unmatched "{" and everything after it is literal text
+        literal.append(word[start:])
+    if literal:
+        segments.append(["".join(literal)])
+    return segments
+
+
+_BRACE_WALK_CHAR_BUDGET = 4096
+
+
+#: Private-use sentinels standing in for a brace char the shell quoted (so it is
+#: literal, not brace syntax).  Chosen outside any name spelling, so they only
+#: ever reset the name automaton.
+_QUOTED_BRACE_OPEN = "\ue000"
+_QUOTED_BRACE_CLOSE = "\ue001"
+#: A folded output / single literal may hold only these: anything else means the
+#: resolver's quote-stripping could change what the shell actually passes.
+_SAFE_FOLD_LITERAL_RE = re.compile(r"[\w.:/@=+-]+")
+
+
+def _quote_mask(text: str) -> "list[str]":
+    """One class char per position of *text*: ``'`` single-quoted, ``"`` double,
+    ``\\`` the char after a backslash, ``.`` unquoted; a quote/backslash that is
+    SYNTAX is itself ``.``.  Mirrors bash: a backslash is inert inside single
+    quotes, a quote of the other kind is literal inside the current one, and a
+    ``$(...)`` command substitution opens its OWN quoting scope -- so a ``'`` or
+    ``$(`` inside an outer double-quoted ``$()`` toggles there, and an inner
+    ``$(`` that sits inside single quotes is literal, not a new scope."""
+    mask: list[str] = []
+    stack: "list[tuple[bool, bool]]" = []
+    single = double = False
+    escaped = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if escaped:
+            mask.append("\\")
+            escaped = False
+        elif ch == "\\" and not single:
+            mask.append(".")
+            escaped = True
+        elif ch == "'" and not double:
+            mask.append(".")
+            single = not single
+        elif ch == '"' and not single:
+            mask.append(".")
+            double = not double
+        elif not single and ch == "$" and i + 1 < n and text[i + 1] == "(":
+            cls = '"' if double else "."
+            mask.append(cls)
+            mask.append(cls)
+            stack.append((single, double))
+            single = double = False
+            i += 2
+            continue
+        elif not single and ch == ")" and stack:
+            single, double = stack.pop()
+            mask.append("'" if single else '"' if double else ".")
+        else:
+            mask.append("'" if single else '"' if double else ".")
+        i += 1
+    return mask
+
+
+def _mask_quoted_braces(text: str) -> str:
+    """*text* with every QUOTED brace-expansion character replaced by a sentinel,
+    so brace expansion and the segment walk treat it as the literal it is.
+
+    A ``${...}`` parameter expansion is copied verbatim: its braces are not
+    brace-EXPANSION syntax (``_BRACE_GROUP_RE`` already excludes ``${``), and
+    masking them would corrupt the name a later ``_self_tokens`` resolve builds.
+    """
+    mask = _quote_mask(text)
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] == "$" and i + 1 < n and text[i + 1] == "{":
+            out.append("${")
+            i += 2
+            depth = 1
+            while i < n and depth:
+                depth += (text[i] == "{") - (text[i] == "}")
+                out.append(text[i])
+                i += 1
+            continue
+        if mask[i] != "." and text[i] == "{":
+            out.append(_QUOTED_BRACE_OPEN)
+        elif mask[i] != "." and text[i] == "}":
+            out.append(_QUOTED_BRACE_CLOSE)
+        else:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _restore_quoted_braces(text: str) -> str:
+    """*text* with the quoted-brace sentinels put back as literal ``{``/``}``."""
+    return text.replace(_QUOTED_BRACE_OPEN, "{").replace(_QUOTED_BRACE_CLOSE, "}")
+
+
+def _single_literal_output(body: str, resolve: "Callable[[str], str]") -> str:
+    """The output of ``$( )`` safe to splice VERBATIM into a word, else ``"\x00"``.
+
+    *resolve* is the shared static-substitution resolver.  Its output is kept
+    ONLY when the body is ``echo``/``printf`` with ONE operand (leading
+    ``-n``/``-e`` dropped) whose quote-removed form is a plain word of safe
+    characters AND equals what the resolver returned -- so a lossy resolver step
+    (``_normalize_operand`` cutting a quoted ``;``) or any ``%``/escape/space
+    makes the fold decline rather than invent a word bash would spell
+    differently.  Everything else is the documented residual.
+    """
+    args = body.split()
+    if not args or _program_basename(args[0]) not in {"echo", "printf"}:
+        return "\x00"
+    operands = args[1:]
+    while operands and re.fullmatch(r"-[neE]+", operands[0]):
+        operands.pop(0)
+    if len(operands) != 1:
+        return "\x00"
+    literal = operands[0].strip("\"'")
+    if (
+        "'" in literal
+        or '"' in literal
+        or "%" in literal
+        or not _SAFE_FOLD_LITERAL_RE.fullmatch(literal)
+    ):
+        return "\x00"
+    out = resolve(body)
+    return out if out == literal else "\x00"
+
+
+def _brace_word_can_spell_self(word: str, expand: "Callable[[str], list[str] | None]") -> bool:
+    """True if some brace expansion of *word* contains the protected name.
+
+    Exact, and it never forms the whole product: it walks the word as a sequence
+    of choice-sets (:func:`_brace_word_segments`) and runs a substring automaton
+    for each name spelling across them, so ``pgrep -f shard-{a..z}{0..9}`` and a
+    300-way service-replica alternation are read without 2^k expansions.  A
+    single group whose own product overflows fails closed.
+    """
+    segments = _brace_word_segments(_mask_quoted_braces(word), expand)
+    if segments is None:
+        return True
+    # Bound the total walk so a word of many large groups cannot stall the
+    # synchronous gate past the loop watchdog: the automaton costs
+    # O(states * sum-of-alternative-characters * spellings), and only the middle
+    # factor is unbounded.  Past the budget, fail closed -- a target that needs
+    # thousands of alternative characters is not a legitimate process lookup.
+    if sum(len(choice) for choices in segments for choice in choices) > _BRACE_WALK_CHAR_BUDGET:
+        return True
+    for name in _SELF_PROGRAM_SPELLINGS:
+        reachable = {0}
+        for choices in segments:
+            nextreach = set()
+            for matched in reachable:
+                for choice in choices:
+                    cursor = matched
+                    for char in choice:
+                        cursor = _name_match_step(name, cursor, char)
+                        if cursor == len(name):
+                            return True
+                    nextreach.add(cursor)
+            reachable = nextreach | {0}
+    return False
+
+
 def _cut_at_operator(token: str) -> str:
     """*token* up to the first GLUED shell operator, with leading ones removed.
 
