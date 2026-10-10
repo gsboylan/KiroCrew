@@ -217,7 +217,16 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised to 29,045 for ``publish_program_word.py``: the git-publish floor reads
+#: program position on quote-aware shell words, so a push run under a program word
+#: the shell resolves at run time (``"$G"``, ``g?t``, a substitution) is found in
+#: every program position -- after newlines, glued and background separators,
+#: inside compound constructs, behind precommands and redirections -- and judged
+#: by its target when its argv is known. The reading is a security-deciding
+#: predicate, so it cannot leave the package; it sits in its own module so
+#: ``argv_floor`` stays under the per-module cap.
+_PACKAGE_LINE_BUDGET = 29_045
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
