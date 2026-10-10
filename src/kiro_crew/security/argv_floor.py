@@ -99,6 +99,7 @@ from .shell_normalizer import (
     _PYTHON_PROGRAM_RE,
     _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
+    _TEXT_HAS_EXPANSION,
     _argv_programs,
     _backtick_closer,
     _cut_at_operator,
@@ -109,6 +110,7 @@ from .shell_normalizer import (
     _dequote_token,
     _ends_argv,
     _glob_could_expand_to,
+    _inherits_expansion_flag,
     _is_mint_verb,
     _is_self_program,
     _iter_shell_chars,
@@ -119,6 +121,7 @@ from .shell_normalizer import (
     _push_token_redirection,
     _push_token_shell_read,
     _redirect_consumes_next,
+    _remote_command_hides_more,
     _resolve_param_defaults,
     _shell_join_continuations,
     _shell_payload_walk,
@@ -128,6 +131,7 @@ from .shell_normalizer import (
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
+    _tokens_are_exec_argv,
     _xargs_here_string_rebuild,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
@@ -1823,6 +1827,7 @@ _QUOTED_SEP_SENTINELS = {
     "(": "\x05",
     "{": "\x06",
 }
+_QUOTED_SEP_CHARS = frozenset(_QUOTED_SEP_SENTINELS.values())
 
 
 def _mask_quoted_separators(text: str) -> str:
@@ -2953,6 +2958,7 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
+@_inherits_expansion_flag
 def _is_ssh_to_self(text_lower: str) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
@@ -2998,6 +3004,10 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # Without an expansion character the words bash hands ssh are exactly the
+    # walk's tokens, so it may stop where ssh stops reading options (see
+    # ``_inherits_expansion_flag``).
+    stops_at_remote_command = not _TEXT_HAS_EXPANSION.get()
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -3069,7 +3079,15 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower):
+    # A nested payload is DECODED text (a printf escape for ``$`` piped to a
+    # shell) whose tokens are normalized, so every frame's SOURCE is checked.
+    frame_stops = stops_at_remote_command and _tokens_are_exec_argv(text_lower)
+    if not frame_stops:
+        # Nested checks on values from these frames inherit it; the decorator's
+        # reset on exit restores the caller's value.
+        _TEXT_HAS_EXPANSION.set(True)
+    frames = _self_token_frames(text_lower)
+    for tokens in frames:
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
@@ -3234,7 +3252,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
             proxyjump_value_pending = False  # previous token was a detached -J (value = hop chain)
             opts_terminated = False  # an exact ``--`` ended option parsing (POSIX)
             depth = 0
-            for arg in tokens[i + 1 :]:
+            walk_hides = False  # a word from the remote command on may hide a command
+            for arg_index, arg in enumerate(tokens[i + 1 :], i + 1):
                 stripped = arg.strip("\"'")
                 # Classify BEFORE testing whether the token ends the argv
                 # (same order as the self-kill floor): a quoted remote payload
@@ -3410,6 +3429,23 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     forward_value_letter = ""
                     option_shadow = False
                     value_shadow = False
+                elif (
+                    frame_stops
+                    and verb == "ssh"
+                    and cmd_start
+                    and not positional_pending
+                    and not value_shadow
+                    and not (
+                        walk_hides := walk_hides
+                        or _remote_command_hides_more(
+                            tokens[arg_index:], _QUOTED_SEP_CHARS if tokens is not frames[0] else ""
+                        )
+                    )
+                ):
+                    # ssh stops option parsing at the first operand after the
+                    # destination: the remote command, sent to the far host as
+                    # data (``ssh far gh issue list -R o/r`` asks for no ``-R``).
+                    break
                 else:
                     # An operand, or the value of the preceding option.  Check
                     # it either way (fail-closed — see the docstring); only an

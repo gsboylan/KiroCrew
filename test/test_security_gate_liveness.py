@@ -226,7 +226,25 @@ def _url_payload_command(n: int) -> str:
 #: text inflated per link and per call is capped so the extra scan stays that of
 #: a 16 KiB plain text. One route, the decode helpers, their comment. No pass
 #: widened and no threshold moved.
-_PACKAGE_LINE_BUDGET = 28_740
+#:
+#: Raised again, from 28,740, for the ssh self-target walk's stop at the remote
+#: command: ssh parses no option after the first operand that follows the
+#: destination, so the walk ends there instead of reading the remote command's
+#: own flags (``gh ... -R owner/repo``) as ssh's remote forward. One branch,
+#: plus, in ``shell_normalizer.py``, the character set of words that can vanish
+#: before ssh reads its argv (expansions, redirections, ssh's own ``%`` tokens)
+#: and the decorator that records whether the submitted text carries one, and a
+#: check of every decoded nested payload's source, inherited by its nested
+#: checks: on such text the walk never stops early. Nor does it before a newline
+#: or comment word, or, in a wrapper's payload, a word carrying a separator the
+#: outer level quoted, since each can start a command the walk would skip. Nor
+#: when a frame's text carries a carriage return or runs ``env`` with an option,
+#: where the words its program gets differ from the tokens (``env -S`` escapes),
+#: and only for an ssh in program position, since a wrapper may join its words,
+#: and never inside an option value another program splits by its own rules,
+#: or in a nested payload that is not plain words (an undecoded escape, a zsh glob),
+#: or beside a word PowerShell splats to nothing (``@args``).
+_PACKAGE_LINE_BUDGET = 28_855
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

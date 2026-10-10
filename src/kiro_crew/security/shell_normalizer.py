@@ -19,6 +19,8 @@ tiers depend on the reader, never the reverse.
 from __future__ import annotations
 
 import bisect
+import contextvars
+import functools
 import os
 import re
 import shlex
@@ -34,7 +36,7 @@ from .vocabulary import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
 
 #: Any one of these in a view means it is not a single plain command: it can
@@ -85,6 +87,83 @@ def _debracket(text: str) -> str:
 # glob in the program name (``kiro[c]rew``) is resolved by the shell BEFORE exec, so
 # it has to be tested for expandability rather than compared literally.
 _GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
+
+# A word carrying one of these can expand to NO word before exec (an empty
+# substitution or variable, an unmatched glob or extglob under nullglob, ``{,}``),
+# a redirection can take words out of argv (``&> f``), and ssh expands its own
+# ``%`` tokens in a command-valued option (``LocalCommand``) to nothing as well.
+_EXPANSION_CHARS: frozenset[str] = frozenset("*?[$`{(<>%")
+# The only characters a nested payload may carry for its tokens to be trusted.
+_PLAIN_PAYLOAD_RE = re.compile(r"[a-z0-9 \t\n_./:,=+@'\";|&-]*")
+# Whether the text an ``inherits_expansion_flag`` caller was FIRST handed
+# carried one of them; ``None`` outside any such call.
+_TEXT_HAS_EXPANSION: "contextvars.ContextVar[bool | None]" = contextvars.ContextVar(
+    "kirocrew_text_has_expansion", default=None
+)
+
+
+def _inherits_expansion_flag(fn: "Callable[[str], bool]") -> "Callable[[str], bool]":
+    """Record whether the text as SUBMITTED carries an expansion character.
+
+    A floor that splices expansions into literal-looking tokens before reading
+    them, and recurses on values derived from that spliced text, reads the flag
+    from ``_TEXT_HAS_EXPANSION``: it is taken at the outermost call. A nested
+    call is handed an option value that another program splits by its own rules
+    (rsync's ``-e``, ssh's ``ProxyCommand``), so the flag is always set there.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(text_lower: str) -> bool:
+        outer = _TEXT_HAS_EXPANSION.get()
+        flag = outer is not None or bool(_EXPANSION_CHARS.intersection(text_lower))
+        token = _TEXT_HAS_EXPANSION.set(flag)
+        try:
+            return fn(text_lower)
+        finally:
+            _TEXT_HAS_EXPANSION.reset(token)
+
+    return wrapper
+
+
+def _remote_command_hides_more(rest: "list[str]", payload_seps: "Iterable[str]") -> bool:
+    """True if the words from an ssh remote command on may hold a later command.
+
+    A newline or comment word can end it where the walk does not re-enter, and in
+    a wrapper's payload a separator the outer level quoted (masked to one of
+    *payload_seps*) is a real one, so the walk must not stop early.
+    """
+    if not rest or not rest[0].strip("\"' \t"):
+        return True
+    seps = frozenset(payload_seps)
+    for word in rest:
+        if "\n" in word or word.lstrip("\"'").startswith("#") or seps.intersection(word):
+            return True
+    return False
+
+
+def _tokens_are_exec_argv(text_lower: str) -> bool:
+    """True if every frame's tokens are the words its program is handed.
+
+    False when a frame's source carries an expansion character, or a carriage
+    return (a word break to the tokenizer, part of a word to bash), or when a
+    frame runs ``env`` with an option: ``env -S`` splits its string by its own
+    escapes (``\\_`` is a word break), which the tokenizer does not decode. A
+    nested frame is decoded text that may run under another shell, so it must
+    be plain words: an escape the decoder leaves encoded (``\\000``, a NUL bash
+    drops) or a zsh extended-glob ``^``/``~``/``#`` can make a word vanish.
+    """
+    for index, (source, tokens) in enumerate(_shell_payload_walk(text_lower)):
+        if "\r" in source or _EXPANSION_CHARS.intersection(source):
+            return False
+        if index and not _PLAIN_PAYLOAD_RE.fullmatch(source):
+            return False
+        programs = {_program_basename(t.strip("\"'")) for t in tokens}
+        if "env" in programs and any(t.startswith("-") for t in tokens):
+            return False
+        # PowerShell splats a word led by ``@`` (``@args``), so it can be no word.
+        if any(t.lstrip("\"'").startswith("@") for t in tokens):
+            return False
+    return True
 
 
 # Characters a shell uses to WRAP a program name rather than to spell it: the

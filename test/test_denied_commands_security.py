@@ -8865,6 +8865,134 @@ class TestSandboxEscapeSshSelf:
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
         assert _denied_by(cmd) is None, cmd
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The remote command's own flags are data for the far host: ``gh``'s
+            # ``-R owner/repo`` is not ssh's remote forward.
+            "ssh far-host.example.com gh issue list -R kirodotdev/KiroCrew",
+            "ssh 10.96.206.36 gh issue list -R kirodotdev/KiroCrew --limit 30",
+            "ssh -F /dev/null -o BatchMode=yes far-host.example.com gh pr view -R o/r",
+            "ssh far-host.example.com ls -J x",
+            # A display title cut mid-quote leaves the remote command unquoted.
+            "ssh -o BatchMode=yes far-host.example.com '~/bin/gh issue list -R o/r --search \"a",
+            # Escaped quotes inside the remote command are literal text.
+            'ssh far-host.example.com \'gh issue list -R o/r --search "a OR \\"b c\\"" --limit 30\'',
+            'ssh far-host.example.com \'gh issue list -R o/r --search "a OR \\"b c\\" OR d',
+            # A separator quoted in the submitted command is part of the remote
+            # command, which the far host's shell runs.
+            "ssh far-host.example.com 'hostname; gh issue list -R o/r'",
+            "ssh far-host.example.com 'gh pr list -R o/r | head -J'",
+            "GH_PAGER=cat ssh far-host.example.com gh issue list -R o/r",
+            "ssh user@far-host.example.com gh issue list -R o/r",
+            "bash -c 'ssh far-host.example.com gh issue list -R o/r'",
+        ],
+    )
+    def test_remote_command_flags_are_not_ssh_options(self, cmd):
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Options between the destination and the remote command are still
+            # ssh's own, and a later local command is still walked.
+            "ssh far-host.example.com -R 2222:localhost:22 id",
+            "ssh far-host.example.com -R 2222",
+            "ssh far-host.example.com -J localhost id",
+            "ssh far-host.example.com -o proxycommand='nc 127.0.0.1 22' id",
+            "ssh far-host.example.com uptime; ssh localhost id",
+            "ssh far-host.example.com uptime && ssh -R 2222 far2.example.com",
+            "ssh far-host.example.com uptime | ssh localhost id",
+            "ssh far-host.example.com uptime\nssh localhost id",
+            # A word that can expand to nothing is not the remote command: bash
+            # drops it and ssh reads the option behind it.
+            "ssh far-host.example.com $(true) -o hostname=127.0.0.1",
+            "ssh far-host.example.com $EMPTY -R 2222",
+            "ssh far-host.example.com `true` -J localhost id",
+            "ssh far-host.example.com *.nomatch -R 2222",
+            "ssh far-host.example.com {,} -R 2222",
+            "ssh far-host.example.com $( true ) -o hostname=127.0.0.1",
+            "ssh far-host.example.com $(printf '\\n') -o hostname=127.0.0.1",
+            "ssh far-host.example.com `printf ''` -R 2222",
+            "ssh far-host.example.com +(zz) -R 2222",
+            # A nested payload is DECODED text (a printf escape for ``$`` piped
+            # to a shell), so a word that can vanish may first appear in a frame:
+            # the walk does not stop for this ssh unless every frame is literal.
+            "printf 'ssh far-host.example.com \\x24e -R 2222:localhost:22' | sh",
+            "printf 'ssh far-host.example.com \\044e -J localhost id' | bash",
+            "echo -e 'ssh far-host.example.com \\x2a.nomatch -R 2222' | sh",
+            "printf 'e=x\\x3b ssh far-host.example.com \\x24\\x7be:1} -R 2222:localhost:22' | bash",
+            "printf 'e=x\\x3b ssh -o proxycommand=\"ssh far2.example.com \\x24\\x7be:1} -R 2222:localhost:22\" far.example.com' | bash",
+            # A redirection takes its words out of argv, and ssh expands its own
+            # ``%`` tokens in a command-valued option to nothing.
+            "ssh far-host.example.com &> /dev/null -R 2222:localhost:22",
+            "ssh far-host.example.com 2> /dev/null -J localhost id",
+            "ssh far-host.example.com < /dev/null -R 2222",
+            "ssh -o localcommand='ssh far2.example.com %j -R 2222:localhost:22' far.example.com",
+            # ...and neither can one in the destination slot, which would make
+            # the literal word after it look like the remote command.
+            "ssh $EMPTY far-host.example.com -R 2222:localhost:22",
+            "ssh $(true) far-host.example.com -J localhost id",
+            'ssh "$@" far-host.example.com -R 2222',
+            # A separator quoted at this level is a real one inside the payload
+            # a wrapper runs, so the word carrying it is not the remote command.
+            "bash -c 'ssh far.example.com x;ssh -J localhost far2'",
+            "bash -c 'ssh far.example.com x|ssh -J localhost far2'",
+            "bash -c 'ssh far.example.com x\nssh -J localhost far2'",
+            "sh -c 'ssh far.example.com x&&ssh -R 2222:localhost:22 far2'",
+            "eval 'ssh far.example.com \\\n -R 2222:localhost:22'",
+            "eval 'ssh far.example.com x; ssh -J localhost far2'",
+            "printf 'ssh far.example.com x;ssh -J localhost far2' | bash",
+            "bash -c 'ssh far.example.com x #c\nssh -J localhost far2'",
+            # A carriage return splits a word for the tokenizer but not for bash,
+            # and ``env -S`` splits its string by its own escapes.
+            "ssh -i a\rb far.example.com -J localhost id",
+            "ssh -l us\rer far.example.com -R 2222:localhost:22",
+            "ssh -i a\rb far.example.com -o hostname=127.0.0.1",
+            "env -S 'ssh far.example.com \\_ -R 2222:localhost:22'",
+            "env --split-string='ssh far.example.com \\_ -J localhost id'",
+            "env -S'ssh far.example.com \\_ -R 2222'",
+            # A wrapper may join its arguments into one shell string, so only an
+            # ssh that is itself the program stops at its remote command.
+            "watch ssh far.example.com ' ' -o hostname=127.0.0.1",
+            "parallel ssh far.example.com ' ' -R 2222:localhost:22 ::: a",
+            "ssh far.example.com ' ' -o hostname=127.0.0.1",
+            # A value another program splits by its own rules (rsync splits its
+            # remote shell on spaces only) is judged in full.
+            "rsync -e 'ssh -i a\tb far.example.com -J localhost id' src far.example.com:dst",
+            "rsync --rsh='ssh -i a\tb far.example.com -J localhost id' src far.example.com:dst",
+            "RSYNC_RSH='ssh -i a\tb far.example.com -J localhost id' rsync src far.example.com:d",
+            # Another shell may run a payload, where zsh's extended glob drops a
+            # word that matches nothing.
+            "zsh -o extendedglob -o nullglob -c 'ssh far.example.com q~q -R 2222:localhost:22'",
+            "zsh -o extendedglob -o nullglob -c 'ssh far.example.com q^q -J localhost id'",
+            "zsh -o extendedglob -o nullglob -c 'ssh far.example.com q# -R 2222'",
+            # A decoded payload whose text is not plain words is judged in full:
+            # bash drops the NUL an undecoded escape stands for.
+            "printf 'ssh far.example.com \\000 -o hostname=127.0.0.1' | bash",
+            "printf 'ssh far.example.com \\x00 -R 2222:localhost:22' | sh",
+            "bash -c 'ssh far.example.com \\\\ -J localhost id'",
+            # PowerShell splats a word led by ``@`` to no argument at all.
+            "ssh far.example.com @nope -J localhost id",
+            "ssh far.example.com @args -R 2222:localhost:22",
+            "ssh far.example.com x #c\nssh -J localhost far2",
+            # A backslash-newline is removed before the words are split.
+            "ssh far.example.com \\\n -R 2222:localhost:22",
+            "ssh far.example.com x\\\n;ssh -J localhost far2",
+        ],
+    )
+    def test_options_before_the_remote_command_stay_checked(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    def test_an_expanded_command_does_not_change_the_next_verdict(self):
+        # The expansion flag belongs to one evaluation: a refused expanded
+        # command, or a nested value judged inside it, leaves the next
+        # literal command free to stop at its remote command.
+        assert _denied_by("ssh far.example.com $(printf '') -R 2222") == self._RULE
+        nested = "ssh -o proxycommand=\"ssh far.example.com $(printf '') -R 2222 nc %h %p\" t.example.com"
+        assert _denied_by(nested) == self._RULE
+        assert _denied_by("ssh far.example.com gh issue list -R o/r") is None
+
     def test_floor_spawns_no_dns_resolver_thread(self):
         # With the own-host cache pinned by the autouse fixture, evaluating a
         # representative allow case through the floor must NOT spawn the real
