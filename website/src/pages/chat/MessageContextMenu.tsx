@@ -12,6 +12,9 @@ export interface MessageMenuItem {
   onSelect: () => void
   /** Draw a separator ABOVE this item. */
   separatorBefore?: boolean
+  /** One muted line under the label, for an item whose label alone does not
+   *  say what it is for. */
+  hint?: string
 }
 
 interface LinkTarget { href: string; text: string }
@@ -85,7 +88,9 @@ export default function MessageContextMenu({ items, children, onOpenChange, onCo
                   its own classes (shadcn/no-restyle). */}
               <span className="flex items-center gap-2 [@media(hover:none)]:min-h-7">
                 <span className="shrink-0 inline-flex text-muted">{item.icon}</span>
-                <span>{item.label}</span>
+                {item.hint
+                  ? <span className="flex flex-col gap-0.5"><span>{item.label}</span><span className="text-[11px] leading-4 text-muted">{item.hint}</span></span>
+                  : <span>{item.label}</span>}
               </span>
             </ContextMenuItem>
           </Fragment>

@@ -28,14 +28,16 @@ describe('AssistantMessage row with Quote offered', () => {
   it('seats Quote, keeps Copy right after it, and folds Link, Pin and Raw into More', () => {
     const onQuote = vi.fn()
     const { rerender } = render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} />)
+    // Without Quote the row already reads Copy + More (More carries the copy
+    // formats), so Quote's seat adds one control and nothing else.
     const before = screen.getAllByRole('button').length
     rerender(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onQuoteMessage={onQuote} />)
-    expect(screen.getAllByRole('button').length).toBeLessThanOrEqual(before)
+    expect(screen.getAllByRole('button').length).toBeLessThanOrEqual(before + 1)
     // The everyday row is exactly Quote + Copy + More.
     expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     expect(screen.queryByTestId('toggle-raw-view')).not.toBeInTheDocument()
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw Markdown'])
     fireEvent.click(screen.getByTestId('quote-message-menu-item'))
     expect(onQuote).toHaveBeenCalledTimes(1)
   })
@@ -44,7 +46,7 @@ describe('AssistantMessage row with Quote offered', () => {
     render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onFork={() => {}} forkIndex={1} forkMessageId="m1" onQuoteMessage={() => {}} />)
     expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).not.toContain('Copy text')
+    expect(screen.queryByTestId('copy-message-menu-item')).not.toBeInTheDocument()
   })
 
   it('on the newest reply Regenerate takes the seat and Copy is still a visible row button right after it', () => {
@@ -55,7 +57,7 @@ describe('AssistantMessage row with Quote offered', () => {
     fireEvent.click(screen.getByLabelText('Copy'))
     expect(copyToClipboard).toHaveBeenCalledWith('Reply text long enough for the raw toggle.')
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown', 'Read aloud'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw Markdown', 'Read aloud'])
   })
 
   it('in a loaded window Fork takes the seat and Copy follows it', () => {
@@ -83,18 +85,18 @@ describe('AssistantMessage row with Quote offered', () => {
     expect(onQuote).toHaveBeenCalledTimes(1)
   })
 
-  it('without Quote the shipped row is unchanged: inline Copy, no More menu', () => {
+  it('without Quote or any other menu the row reads Copy + More, More carrying the copy formats', () => {
     render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} />)
-    expect(screen.getByLabelText('Copy')).toBeInTheDocument()
-    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+    expect(rowLabels()).toEqual(['Copy', 'More actions'])
     expect(screen.queryByTestId('quote-message')).not.toBeInTheDocument()
   })
 
   it('a refused inline Copy link raises the row ErrorNotice, like the menu copy of the same action', async () => {
-    // Without Quote the link action stays in the row; a refused write must not
-    // end as a 1.5 s icon flash alone (errors-use-error-notice).
+    // Without Quote, on a reply that already has a menu (Speak), the link action
+    // stays in the row; a refused write must not end as a 1.5 s icon flash
+    // alone (errors-use-error-notice).
     vi.mocked(copySessionLink).mockResolvedValueOnce(false)
-    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" />)
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onSpeak={() => {}} />)
     await act(async () => { fireEvent.click(screen.getByTitle('Copy link to message')); await Promise.resolve() })
     expect(screen.getByText('Copy failed. Select the text and copy it manually.')).toBeInTheDocument()
     fireEvent.click(screen.getByLabelText('Dismiss'))
@@ -150,11 +152,11 @@ describe('AssistantMessage context menu', () => {
     expect(screen.queryByTestId('message-context-menu')).not.toBeInTheDocument()
   })
 
-  it('opens on right-click: Quote first, then Copy, Copy link, Pin', () => {
+  it('opens on right-click: Quote first, then both copy formats, Copy link, Pin', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onQuoteMessage={onQuote} />)
     fireEvent.contextMenu(screen.getByTestId('message-bubble'))
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as MarkdownKeeps ** and # symbols, for Markdown editors and chat apps', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw Markdown'])
     fireEvent.click(screen.getByTestId('message-context-copy'))
     expect(copyToClipboard).toHaveBeenCalledWith(LONG)
   })

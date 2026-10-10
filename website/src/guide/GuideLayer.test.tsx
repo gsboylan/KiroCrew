@@ -2795,6 +2795,8 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(await screen.findByText(L('step_ui_show_here', { label: 'Older Sessions' }))).toBeTruthy()
     expect(screen.queryByTestId('guide-step-caution')).toBeNull()
     expect(writes('/api/guide/progress')).toHaveLength(1)
+    // The press is watched once the target is measured and outlined.
+    await screen.findByTestId('guide-target-outline')
     fireEvent.click(screen.getByTestId('older-sessions'))
     // The control still does its own thing, and the guide ends on the press.
     expect(onOlder).toHaveBeenCalledTimes(1)

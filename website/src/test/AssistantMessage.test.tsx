@@ -38,7 +38,7 @@ describe('AssistantMessage', () => {
   it('offers Read aloud for a short nonblank completed reply and sends its exact content', () => {
     const onSpeak = vi.fn()
     render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={onSpeak} />)
-    expect(screen.queryByTitle('Copy')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Copy as Markdown')).not.toBeInTheDocument()
     fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
     const readAloud = screen.getByRole('menuitem', { name: 'Read aloud' })
     expect(readAloud).toHaveAttribute('aria-description', 'Read message aloud')
@@ -49,7 +49,7 @@ describe('AssistantMessage', () => {
   it('does not offer Read aloud for a blank completed reply', () => {
     render(<AssistantMessage content={' \n\t '} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} />)
     expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
-    expect(screen.getByTitle('Copy')).toBeInTheDocument()
+    expect(screen.getByTitle('Copy as Markdown')).toBeInTheDocument()
   })
 
   it('distinguishes copying reply text from copying its message link', async () => {
@@ -58,24 +58,27 @@ describe('AssistantMessage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy link to message' }))
     expect(copySessionLink).toHaveBeenCalledWith('chat-a', 'My chat', '2026-09-07T12:00:00Z', undefined)
     fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy text' }))
+    fireEvent.click(screen.getByTestId('copy-message-menu-item'))
     await act(async () => {})
     expect(copyToClipboard).toHaveBeenCalledWith('Done.')
     expect(screen.getByTestId('copy-message-menu-item')).toHaveTextContent('Copied')
   })
 
   it.each([
-    ['short', 'Done.', {}],
-    ['raw', 'x'.repeat(30), {}],
-    ['regenerate', 'Done.', { onRegenerate: vi.fn() }],
-  ])('swaps Copy for More without growing a %s footer', (_case, content, extra) => {
+    ['short', 'Done.', {}, 2, 1],
+    ['raw', 'x'.repeat(30), {}, 2, 2],
+    ['regenerate', 'Done.', { onRegenerate: vi.fn() }, 3, 2],
+  ])('swaps Copy for More without growing a %s footer', (_case, content, extra, expectedBase, expectedVoiced) => {
     const base = render(<AssistantMessage content={content} isStreaming={false} slotRunning={false} {...extra} />)
     const baseButtons = base.container.querySelectorAll('[data-role="assistant"] > .opacity-0 button').length
     cleanup()
     const voiced = render(<AssistantMessage content={content} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} {...extra} />)
     const voicedButtons = voiced.container.querySelectorAll('[data-role="assistant"] > .opacity-0 button').length
-    expect(voicedButtons).toBe(baseButtons)
-    expect(screen.queryByTitle('Copy')).not.toBeInTheDocument()
+    // Without Speak the row already carries More (for the copy formats), so
+    // moving Copy into it removes one row button or none.
+    expect(baseButtons).toBe(expectedBase)
+    expect(voicedButtons).toBe(expectedVoiced)
+    expect(screen.queryByTitle('Copy as Markdown')).not.toBeInTheDocument()
     expect(screen.getByTestId('assistant-more-actions')).toBeInTheDocument()
   })
 
@@ -113,7 +116,7 @@ describe('AssistantMessage', () => {
   it('surfaces inline Copy failure without stealing focus to the existing More trigger', async () => {
     vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
     render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} shareEnabled />)
-    const copy = screen.getByTitle('Copy')
+    const copy = screen.getByTitle('Copy as Markdown')
     copy.focus()
     fireEvent.click(copy)
     await act(async () => {})
@@ -304,7 +307,7 @@ describe('AssistantMessage', () => {
     )
     expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
     const more = screen.getByTestId('assistant-more-actions')
-    const row = screen.getByTitle('Copy').parentElement as HTMLElement
+    const row = screen.getByTitle('Copy as Markdown').parentElement as HTMLElement
     // IN the row for the AVAILABLE state: this state removed the row's
     // dedicated fork button in favour of this menu, so the trigger inside
     // does not grow the row, which is what the out-of-row placement exists to
@@ -361,7 +364,7 @@ describe('AssistantMessage', () => {
     // footers. One row, same shape in every state, is the contract now.
     const props = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false, onSpeak: vi.fn(), onRegenerate: vi.fn() }
     render(<AssistantMessage {...props} onFork={vi.fn()} onLoadEarlier={vi.fn()} />)
-    const row = screen.getByTitle('Copy').parentElement as HTMLElement
+    const row = screen.getByTitle('Copy as Markdown').parentElement as HTMLElement
     expect(row).toContainElement(screen.getByTestId('assistant-more-actions'))
     // …and it is the ONLY reveal row: no sibling row was added below it.
     const rows = document.querySelectorAll('[data-role="assistant"] .opacity-0')
@@ -374,15 +377,18 @@ describe('AssistantMessage', () => {
     // mint a top-level session in the Sessions tab and silently switch the
     // GLOBAL active slot. With no handler, neither the row button nor the
     // unavailable-state overflow menu may render.
+    // More is still drawn there (it carries the copy formats), but holds no fork item.
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} forkIndex={2} />)
     expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+    openOverflow()
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
     cleanup()
     // Same with no forkIndex: the onFork overflow branch must also stay
     // closed when the handler is undefined.
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} />)
     expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+    openOverflow()
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
   })
 
   it('keeps an unavailable fork item reachable, so its reason can actually be read', () => {
@@ -566,9 +572,12 @@ describe('AssistantMessage', () => {
     // carries no per-message actions at all (Share included).
     const variants = [{ content: 'ready' }, { content: 'ok' }]
     const short = 'ready'
-    // 1. No handlers at all (embedded pane / app-SDK renderer): no trigger.
+    // 1. No handlers at all (embedded pane / app-SDK renderer): the trigger
+    // carries only the copy formats, no fork item.
     const a = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} variants={variants} />)
-    expect(screen.queryByTitle('More actions')).toBeNull()
+    openOverflow()
+    expect(screen.queryByTestId('fork-from-here')).toBeNull()
+    expect(screen.getByTestId('copy-rich-menu-item')).toBeInTheDocument()
     a.unmount()
     // 2. Handler but NO index: the trigger appears -- the item's action is the remedy.
     const b = render(<AssistantMessage content={short} isStreaming={false} slotRunning={false} onFork={vi.fn()} variants={variants} />)
@@ -582,8 +591,8 @@ describe('AssistantMessage', () => {
     // 4. Raw-view remains a row button while Speak joins the existing menu.
     const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} onFork={vi.fn()} variants={variants} />)
     expect(screen.getAllByTitle('More actions')).toHaveLength(1)
-    expect(screen.getByTitle('Show raw markdown')).toBeTruthy()
-    expect(screen.getByTitle('Copy')).toBeTruthy()
+    expect(screen.getByTitle('Show raw Markdown')).toBeTruthy()
+    expect(screen.getByTitle('Copy as Markdown')).toBeTruthy()
     openOverflow()
     expect(screen.getByTestId('speak-message')).toHaveTextContent('Read aloud')
     d.unmount()
@@ -684,11 +693,14 @@ describe('AssistantMessage', () => {
       expect(screen.queryByTestId('share-message')).not.toBeInTheDocument()
     })
 
-    it('withdraws the whole trigger when Share was the only item left (loaded window, fork as a row button)', () => {
+    it('withdraws Share from the menu when governance pins it off (loaded window, fork as a row button)', () => {
       // Loaded state keeps fork in the row, so the menu held Share alone; a
       // pinned-off Share would leave a trigger that opens an empty menu.
+      // More stays for the copy formats; only Share is withdrawn.
       render(<AssistantMessage {...menuProps} onFork={vi.fn()} forkIndex={4} shareEnabled={false} />)
-      expect(screen.queryByTitle('More actions')).toBeNull()
+      openOverflow()
+      expect(screen.queryByTestId('share-message')).toBeNull()
+      expect(screen.getByTestId('copy-rich-menu-item')).toBeInTheDocument()
       // The everyday controls are untouched by the pin.
       expect(screen.getByTitle('Fork conversation from here').tagName).toBe('BUTTON')
       cleanup()
@@ -707,7 +719,7 @@ describe('action footer on touch devices', () => {
   // hovers — without the hover:none override the actions (copy, speak,
   // regenerate, fork) are permanently invisible on phones. happy-dom does not
   // evaluate media queries, so pin the utility class itself.
-  const footer = () => screen.getByTitle('Copy').closest('div') as HTMLElement
+  const footer = () => screen.getByTitle('Copy as Markdown').closest('div') as HTMLElement
 
   it('reveals the footer where the pointer cannot hover', () => {
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
@@ -899,7 +911,7 @@ describe('parseOptions', () => {
   })
 
   it('shows "Copy link to message" button when messageTs and slotKey are provided', () => {
-    render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" />)
+    render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} onSpeak={vi.fn()} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" />)
     expect(screen.getByTitle('Copy link to message')).toBeInTheDocument()
   })
 
@@ -914,7 +926,7 @@ describe('parseOptions', () => {
   })
 
   it('calls copySessionLink with correct args on link button click', () => {
-    render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" mode="chat" />)
+    render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} onSpeak={vi.fn()} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" mode="chat" />)
     fireEvent.click(screen.getByTitle('Copy link to message'))
     expect(copySessionLink).toHaveBeenCalledWith('chat-1', 'My Chat', '2025-05-13T14:00:00.000Z', 'chat')
   })
@@ -926,7 +938,7 @@ describe('parseOptions', () => {
     // whole-comment strip): copy preserves message fidelity and has no
     // fence-protection pass, so comments inside fenced code must survive.
     render(<AssistantMessage content={'Substantive report body\n\n<!-- keep-visible -->'} isStreaming={false} slotRunning={false} />)
-    fireEvent.click(screen.getByTitle('Copy'))
+    fireEvent.click(screen.getByTitle('Copy as Markdown'))
     expect(copyToClipboard).toHaveBeenCalledWith('Substantive report body')
   })
 
@@ -938,14 +950,14 @@ describe('parseOptions', () => {
 
 describe('raw/rendered toggle is icon-only', () => {
   it('carries no visible label; the title names the view a click will show and aria-pressed the current one', () => {
-    render(<AssistantMessage content={'x'.repeat(40)} isStreaming={false} slotRunning={false} />)
+    render(<AssistantMessage content={'x'.repeat(40)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} />)
     const toggle = screen.getByTestId('toggle-raw-view')
     // Every other row action is a bare 14px glyph; a text label here was the
     // one control that broke the row's rhythm.
     expect(toggle.textContent).toBe('')
     expect(toggle.querySelector('svg')).not.toBeNull()
     expect(toggle).toHaveAttribute('aria-pressed', 'false')
-    expect(toggle).toHaveAttribute('title', 'Show raw markdown')
+    expect(toggle).toHaveAttribute('title', 'Show raw Markdown')
     expect(toggle).toHaveAttribute('aria-label', 'Switch to raw markdown view')
     const renderedGlyph = toggle.querySelector('svg')!.getAttribute('class')
     fireEvent.click(toggle)
@@ -959,8 +971,10 @@ describe('raw/rendered toggle is icon-only', () => {
 })
 
 describe('raw view holds the bubble at its rendered height', () => {
+  // A menu already exists (Speak), so the raw toggle stays a row button.
+  const speak = () => {}
   it('freezes the bubble height on entering raw view so the footer row does not move, and releases it on the way back', () => {
-    render(<AssistantMessage content={'# Title\n\n- one\n- two\n\n' + 'x'.repeat(40)} isStreaming={false} slotRunning={false} />)
+    render(<AssistantMessage content={'# Title\n\n- one\n- two\n\n' + 'x'.repeat(40)} isStreaming={false} slotRunning={false} onSpeak={speak} />)
     const bubble = screen.getByTestId('message-bubble')
     // happy-dom has no layout; stand in for the rendered view's measured height.
     bubble.getBoundingClientRect = () => ({ height: 137.5, width: 600, top: 0, left: 0, bottom: 137.5, right: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
@@ -978,13 +992,13 @@ describe('raw view holds the bubble at its rendered height', () => {
 
   it('releases the pin on a viewport resize and on a content change, but not before', () => {
     const rect = () => ({ height: 137.5, width: 600, top: 0, left: 0, bottom: 137.5, right: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
-    const { rerender } = render(<AssistantMessage content={'# Title\n\n' + 'x'.repeat(40)} isStreaming={false} slotRunning={false} />)
+    const { rerender } = render(<AssistantMessage content={'# Title\n\n' + 'x'.repeat(40)} isStreaming={false} slotRunning={false} onSpeak={speak} />)
     const bubble = screen.getByTestId('message-bubble')
     bubble.getBoundingClientRect = rect
     fireEvent.click(screen.getByTestId('toggle-raw-view'))
     expect(bubble.style.height).toBe('137.5px')
     // A re-render with the same content keeps the pin: the snapshot is still valid.
-    rerender(<AssistantMessage content={'# Title\n\n' + 'x'.repeat(40)} isStreaming={false} slotRunning={false} />)
+    rerender(<AssistantMessage content={'# Title\n\n' + 'x'.repeat(40)} isStreaming={false} slotRunning={false} onSpeak={speak} />)
     expect(bubble.style.height).toBe('137.5px')
     // The viewport re-wraps everything, so the snapshot is stale: let go, stay in raw view.
     act(() => { window.dispatchEvent(new Event('resize')) })
@@ -994,12 +1008,12 @@ describe('raw view holds the bubble at its rendered height', () => {
     fireEvent.click(screen.getByTestId('toggle-raw-view'))
     fireEvent.click(screen.getByTestId('toggle-raw-view'))
     expect(bubble.style.height).toBe('137.5px')
-    rerender(<AssistantMessage content={'# Other\n\n' + 'y'.repeat(40)} isStreaming={false} slotRunning={false} />)
+    rerender(<AssistantMessage content={'# Other\n\n' + 'y'.repeat(40)} isStreaming={false} slotRunning={false} onSpeak={speak} />)
     expect(bubble.style.height).toBe('')
   })
 
   it('does not pin a height it could not measure', () => {
-    render(<AssistantMessage content={'x'.repeat(40)} isStreaming={false} slotRunning={false} />)
+    render(<AssistantMessage content={'x'.repeat(40)} isStreaming={false} slotRunning={false} onSpeak={speak} />)
     const bubble = screen.getByTestId('message-bubble')
     // The rect is 0-high with no layout engine: nothing to hold, so no clamp.
     fireEvent.click(screen.getByTestId('toggle-raw-view'))
@@ -1015,10 +1029,13 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(stats).toHaveTextContent('2.50 credits')
   })
 
-  it('does not add More actions merely to show turn stats', () => {
-    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+  it('does not add a footer control merely to show turn stats', () => {
+    const plain = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} />)
+    const before = plain.container.querySelectorAll('button').length
+    cleanup()
+    const withStats = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
     expect(screen.getByTestId('turn-stats')).toBeVisible()
-    expect(screen.queryByTitle('More actions')).not.toBeInTheDocument()
+    expect(withStats.container.querySelectorAll('button').length).toBe(before)
   })
 
   it('puts the billed amount before the elapsed time', () => {
@@ -1180,12 +1197,12 @@ describe('pin toggle a11y state', () => {
   // state via aria-pressed, not only the title/aria-label text swap.
   it('exposes aria-pressed on the pin toggle reflecting the pinned prop', () => {
     const { rerender } = render(
-      <AssistantMessage content="Hi" isStreaming={false} slotRunning={false} messageTs="ts-pin" onTogglePin={() => {}} />
+      <AssistantMessage content="Hi" isStreaming={false} slotRunning={false} onSpeak={() => {}} messageTs="ts-pin" onTogglePin={() => {}} />
     )
     expect(screen.getByTitle('Pin message')).toHaveAttribute('aria-pressed', 'false')
 
     rerender(
-      <AssistantMessage content="Hi" isStreaming={false} slotRunning={false} messageTs="ts-pin" pinned onTogglePin={() => {}} />
+      <AssistantMessage content="Hi" isStreaming={false} slotRunning={false} onSpeak={() => {}} messageTs="ts-pin" pinned onTogglePin={() => {}} />
     )
     expect(screen.getByTitle('Unpin message')).toHaveAttribute('aria-pressed', 'true')
   })
