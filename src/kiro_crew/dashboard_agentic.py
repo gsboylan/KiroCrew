@@ -493,6 +493,28 @@ def check_write(
             f"is not a storable {spec.type}, so nothing could store or draw it -- send a "
             "value with no credential-like text in it",
         )
+    # The SHAPE is asked again too, and not only the type. The scrub rewrites strings,
+    # so a declared choice that is itself credential-shaped passes the check above --
+    # a placeholder is a perfectly good ``string`` -- and then lands in the cell as a
+    # value the page's own Model says cannot be there. Everything the shape constrains
+    # beyond the type is in the same position: an enum member, a required key under a
+    # scrubbed name, an item in a typed array.
+    if spec.shape is not None:
+        cleaned_problems: list[str] = []
+        shape_problems(spec.shape, cleaned, field, cleaned_problems)
+        if cleaned_problems:
+            raise WriteRefused(
+                "redacted_value_invalid",
+                field,
+                (
+                    f"redacting credentials from this value for {field!r} leaves "
+                    f"something the shape {instance.manifest.id!r} draws does not "
+                    "accept: "
+                    + "; ".join(cleaned_problems)
+                    + ". The STORED value is the scrubbed one, so send a value whose "
+                    "credential-like text is not part of what the shape requires"
+                ).strip(),
+            )
     if cleaned_size > DASHBOARD_VALUE_BYTES:
         raise WriteRefused(
             "redacted_value_too_large",
