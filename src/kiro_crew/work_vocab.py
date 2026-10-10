@@ -35,13 +35,46 @@ WORK_ACTIONS: tuple[str, ...] = (
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
 WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
+#: Worker statuses whose ARRIVAL needs the conductor, and the whole set that wakes
+#: it: ``done`` is a claim it must verify, ``blocked`` an external dependency it must
+#: clear, ``question`` a decision only it can make. ``progress`` is deliberately
+#: absent -- it advances the board and reaches the conductor on the next real wake,
+#: and charging a turn for it rebuilds the polling the watch exists to remove.
+#:
+#: Here rather than in one of its two readers because BOTH need it and each sits
+#: where the other may not be imported: ``ledger_wake`` is the watch's pure gate and
+#: must not grow imports, and ``conductor_wake`` is reachable from the gateway's boot
+#: path. Two spellings of this set would let a trigger push for news the gate then
+#: refuses, which is precisely the wake nobody can see is wasted.
+WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
 #: When a ``blocked`` or ``question`` report waits on a person, as data rather than
 #: prose: ``approval`` (a tool approval timed out or waits) or ``needs_human`` (only a
 #: person can unblock it). A work-ledger watch whose open items all carry one,
 #: unchanged since its last turn, holds. A wait on anything else carries no reason.
 WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
+#: Why a ``progress`` report is where the worker STOPPED rather than where it is:
+#: ``waiting`` says it parked itself and expects to be resumed, so its silence is
+#: intended and not a result. It rides on ``progress`` because it must not wake the
+#: conductor, and :data:`WORK_WAKE_STATUSES` is what decides that -- a stop reason on
+#: a waking status would say two opposite things in one report.
+WORK_PROGRESS_REASONS: tuple[str, ...] = ("waiting",)
+#: Per status, the reasons a report of that status may carry. A reason and the status
+#: under it are one fact, so the pairing lives beside the vocabularies rather than as
+#: a rule each writer restates: the store validates against this map, and
+#: :data:`WORK_REASON_STATUSES` and :data:`WORK_REASONS` are derived from it so a new
+#: reason cannot reach one reader and miss another.
+WORK_REASONS_BY_STATUS: dict[str, tuple[str, ...]] = {
+    "progress": WORK_PROGRESS_REASONS,
+    "blocked": WORK_BLOCKED_REASONS,
+    "question": WORK_BLOCKED_REASONS,
+}
 #: The statuses a ``reason`` may ride on.
-WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
+WORK_REASON_STATUSES: tuple[str, ...] = tuple(WORK_REASONS_BY_STATUS)
+#: Every reason value, whatever status carries it. This is what an entry schema and a
+#: field check accept; the per-status tuple above is what pairs it with its status.
+WORK_REASONS: tuple[str, ...] = tuple(
+    dict.fromkeys(reason for reasons in WORK_REASONS_BY_STATUS.values() for reason in reasons)
+)
 WORK_EVENT_KINDS: tuple[str, ...] = ("create", "bind", "report", "decision", "verdict", "close")
 #: Items one board may CREATE over its life, open and closed together -- and the
 #: number of item records the crew log's ``work`` fold retains per board. ONE value
@@ -111,7 +144,8 @@ class WorkBoardItem(TypedDict):
     fails: int
     #: One of :data:`WORK_WORKER_STATUSES`, or unset.
     status: str | None
-    #: One of :data:`WORK_BLOCKED_REASONS` on a blocked/question report, or unset.
+    #: Why this report stopped where it did: one of the reasons
+    #: :data:`WORK_REASONS_BY_STATUS` pairs with ``status``, or unset.
     reason: str | None
     summary: str
     artifacts: dict[str, str]

@@ -146,8 +146,8 @@ from kiro_crew.session_ledger import LEDGER_ENTRY_TYPE
 from kiro_crew.session_ledger import SCHEMA_VERSION as LEDGER_SCHEMA_VERSION
 from kiro_crew.session_ledger import TERMINAL_PHASES as LEDGER_TERMINAL_PHASES
 from kiro_crew.work_vocab import (
-    WORK_BLOCKED_REASONS,
     WORK_CONDUCTOR_FIELDS,
+    WORK_REASONS,
     WORK_STORED_ITEM_LIMIT,
     WorkBoardItem,
     WorkBoardView,
@@ -6062,7 +6062,7 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
 
 def _work_reason(value: Any) -> str | None:
     """A report's ``reason`` when it is one of the closed vocabulary, else unset."""
-    return value if isinstance(value, str) and value in WORK_BLOCKED_REASONS else None
+    return value if isinstance(value, str) and value in WORK_REASONS else None
 
 
 def _work_field(name: str, value: Any) -> Any:

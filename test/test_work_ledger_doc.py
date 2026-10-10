@@ -59,20 +59,53 @@ def test_the_doc_names_every_work_tool_and_no_other(doc_text: str) -> None:
 def test_the_doc_pins_the_four_worker_statuses(doc_text: str) -> None:
     """The status table carries every value ``work_report`` accepts, and only those.
 
-    Scoped to the table under the ``work_report`` heading rather than the whole page:
-    'progress' and 'done' are ordinary English elsewhere in the prose, so a page-wide
-    substring search would stay green with the table's own rows gone.
+    Scoped to the FIRST table under the ``work_report`` heading rather than the whole
+    page or the whole section: 'progress' and 'done' are ordinary English elsewhere in
+    the prose, so a page-wide substring search would stay green with the table's own
+    rows gone, and the section carries a second table whose first cell names a reason.
     """
     from kiro_crew.work_ledger import WORKER_STATUSES
 
-    table = doc_text.split("## `work_report`", 1)[1].split("## Why `done` is a claim", 1)[0]
-    rows = {line.split("|")[1].strip() for line in table.splitlines() if line.startswith("| `")} - {
-        "`status`"
-    }  # the table header, whose first cell names the field
+    rows = {line.split("|")[1].strip() for line in _first_table(doc_text, "## `work_report`")}
     assert rows == {f"`{s}`" for s in WORKER_STATUSES}, (
         f"the work_report status table lists {sorted(rows)}, but the server accepts "
         f"{sorted(WORKER_STATUSES)}"
     )
+
+
+def _first_table(doc_text: str, heading: str) -> "list[str]":
+    """The body rows of the first markdown table under *heading*.
+
+    The run is every line from the first ``|`` to the first line that is not one, so a
+    later table in the same section is its own; the header's own first cell is a
+    backticked field name, so the first backticked row is dropped with the separator.
+    """
+    rows: "list[str]" = []
+    for line in doc_text.split(heading, 1)[1].splitlines():
+        if line.startswith("|"):
+            rows.append(line)
+        elif rows:
+            break
+    return [row for row in rows if row.startswith("| `")][1:]
+
+
+def test_the_doc_pins_every_reason_against_the_status_it_rides_on(doc_text: str) -> None:
+    """The reason table carries every value the store accepts, each beside its own
+    carriers, because a reason on the wrong status is refused rather than ignored."""
+    from kiro_crew.work_vocab import WORK_REASONS_BY_STATUS
+
+    listed = {
+        row.split("|")[1]
+        .strip()
+        .strip("`"): {token for token in row.split("|")[2].split("`")[1::2]}
+        for row in _first_table(doc_text, "**`reason` says why")
+    }
+    expected = {
+        reason: {status for status, reasons in WORK_REASONS_BY_STATUS.items() if reason in reasons}
+        for reasons in WORK_REASONS_BY_STATUS.values()
+        for reason in reasons
+    }
+    assert listed == expected, f"the reason table lists {listed}, the server accepts {expected}"
 
 
 def test_the_doc_pins_the_five_acceptance_verdicts(doc_text: str) -> None:

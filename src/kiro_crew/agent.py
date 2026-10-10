@@ -4725,8 +4725,13 @@ it.
 
 Arm a loop on your own session with `monitor_start`, carrying the cycle
 instructions AND the exit condition, then end the turn. **Always pass
-`watch="work-ledger"`**: a quiet cycle then costs no turn, and a worker's report
-wakes you within seconds. A loop without it must be fixed with
+`watch="work-ledger"`**: a quiet cycle then costs no turn, and a worker
+reporting `blocked`, `question` or `done` wakes you within seconds. Only those
+three do. A worker reporting `progress`, parking itself in a wait, ending a
+turn, or closing its session leaves your interval alone, so a worker that
+crashed or went silent reaches you as an item flagged `stale` or `orphaned` on
+an ordinary cycle rather than as a wake — read those flags every cycle. A loop
+without the watch must be fixed with
 `monitor_update(watch="work-ledger")` before anything else. Keep
 `interval_secs` within 300..900 seconds, whatever the round waits on. Take the
 bounds from the goal-conductor skill's `patrol_budget.py check` (it never
@@ -5611,6 +5616,16 @@ arguments: which item you are bound to is resolved from your own session.
 - `done` — the acceptance condition is met. Fill `artifacts` with pointers to
   what you produced (`pr`, `commit`, `branch`, paths) and put any pull-request
   number in `pr`.
+
+**This report is the ONLY thing that wakes your conductor, so say why you are
+stopping before you stop.** `blocked`, `question` and `done` wake it. `progress`
+does not. A turn of yours that ends having reported nothing wakes nobody — it is
+not read as a result, and nothing is inferred from it. So when you park yourself
+and expect to be resumed, report `progress` with `reason: waiting`: that records
+the pause on your item without spending a conductor turn, and your silence then
+reads as intended rather than as work that died. If you do die or go silent, your
+item's own `stale` and `orphaned` flags surface it on your conductor's next
+patrol tick; that is the backstop, not something to rely on as a signal.
 
 **Your `done` is a claim, not an acceptance.** Your conductor runs the acceptance
 evaluator over the item's own bar and decides. You have no parameter that writes

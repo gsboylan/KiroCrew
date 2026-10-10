@@ -79,9 +79,9 @@ from kiro_crew.monitoring.registry import (
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
 from kiro_crew.session_directive import MAX_TOOL_RESULT_CHARS
 from kiro_crew.work_vocab import (
-    WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
-    WORK_REASON_STATUSES,
+    WORK_REASONS,
+    WORK_REASONS_BY_STATUS,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
 )
@@ -4593,10 +4593,11 @@ WORK_REPORT_SCHEMA = ToolSchema(
         FieldSpec("summary", str, required=True, max_len=500, clamp_to_max=True),
         FieldSpec("artifacts", dict),
         FieldSpec("pr", int, min_val=1, max_val=1_000_000_000),
-        # Why a blocked/question report is stuck. Typed so the patrol can tell a
-        # wait on a person (which holds it) from one on a build (which does not);
-        # the pairing with ``status`` is ``_validate_work_report``'s check.
-        FieldSpec("reason", str, allowed=frozenset(WORK_BLOCKED_REASONS)),
+        # Why the report stopped where it did. Typed so the patrol can tell a wait
+        # on a person (which holds it) from one on a build (which does not), and so
+        # a worker that parked itself to wait says so rather than going quiet; the
+        # pairing with ``status`` is ``_validate_work_report``'s check.
+        FieldSpec("reason", str, allowed=frozenset(WORK_REASONS)),
     ],
     custom_validator=lambda cleaned: _validate_work_report(cleaned),
 )
@@ -4646,12 +4647,22 @@ WORK_LEDGER_RECORD_SCHEMA = ToolSchema(
 def _validate_work_report(cleaned: dict[str, Any]) -> None:
     """A report's cross-field checks: the artifacts map, and ``reason``'s status.
 
-    ``reason`` says why a report is stuck, so it rides only on ``blocked`` or
-    ``question``; on ``progress`` or ``done`` it would claim a wait that is not one.
+    A reason and the status under it are one fact, so each value rides only on the
+    statuses ``WORK_REASONS_BY_STATUS`` pairs it with: ``approval`` and
+    ``needs_human`` say a ``blocked`` or ``question`` is stuck on a person, and
+    ``waiting`` says a ``progress`` report is where the worker parked itself. Either
+    on the other's status would claim the opposite of what it means -- a ``done``
+    that is also stuck, or a wait that wakes the conductor.
     """
     _validate_work_artifacts(cleaned.get("artifacts"))
-    if cleaned.get("reason") is not None and cleaned.get("status") not in WORK_REASON_STATUSES:
-        raise ValidationError("reason", "is allowed only with status blocked or question")
+    reason = cleaned.get("reason")
+    if reason is None:
+        return
+    if reason not in WORK_REASONS_BY_STATUS.get(str(cleaned.get("status") or ""), ()):
+        carriers = ", ".join(
+            status for status, reasons in WORK_REASONS_BY_STATUS.items() if reason in reasons
+        )
+        raise ValidationError("reason", f"is allowed only with status {carriers}")
 
 
 def _validate_work_artifacts(artifacts: object) -> None:

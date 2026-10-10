@@ -38,9 +38,18 @@ import logging
 from typing import Callable
 
 from kiro_crew import irq, ledger_wake, work_ledger
-from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASON_STATUSES
+from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASONS_BY_STATUS
 
 logger = logging.getLogger(__name__)
+
+#: The statuses a person-wait reason rides on, DERIVED from the pairing map rather
+#: than listed: a reason added for some other kind of stop must not widen what counts
+#: as a wait on a person, and deriving it is what makes that impossible to forget.
+_PERSON_WAIT_STATUSES: frozenset[str] = frozenset(
+    status
+    for status, reasons in WORK_REASONS_BY_STATUS.items()
+    if any(reason in WORK_BLOCKED_REASONS for reason in reasons)
+)
 
 #: This probe's subject kind. Defined HERE rather than in ``probes/__init__``, which
 #: imports this module: the constant has to be readable without reaching back into
@@ -400,6 +409,18 @@ def worker_report_revision(items: list[work_ledger.WorkItem]) -> str:
     return ledger_wake.revision(newest_report) or _NO_REPORTS
 
 
+def _waits_on_a_person(item: work_ledger.WorkItem) -> bool:
+    """Whether *item* cannot move until someone acts.
+
+    The STATUS is checked as well as the reason because a reason value names its own
+    carrier: ``approval`` and ``needs_human`` ride on ``blocked`` / ``question``,
+    while ``waiting`` rides on ``progress`` and names a worker that parked itself --
+    nobody is being waited on there, and the patrol must keep reading.
+    """
+    status = item.status or ""
+    return status in _PERSON_WAIT_STATUSES and item.reason in WORK_BLOCKED_REASONS
+
+
 def person_wait_fingerprint(
     conductor_key: str, *, worker_closed: Callable[[str], bool] | None = None
 ) -> str | None:
@@ -436,10 +457,7 @@ def person_wait_fingerprint(
         open_items = [item for item in items if not item.is_terminal]
         if not open_items:
             return None
-        if not all(
-            item.status in WORK_REASON_STATUSES and item.reason in WORK_BLOCKED_REASONS
-            for item in open_items
-        ):
+        if not all(_waits_on_a_person(item) for item in open_items):
             return None
         closed = worker_closed or _always_open
         if any(closed(item.worker_session_key or "") for item in open_items):

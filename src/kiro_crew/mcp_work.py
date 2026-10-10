@@ -334,7 +334,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "reads without interpreting it. Call it at each real milestone rather "
                 "than on a timer. 'progress' is informational; 'blocked' means an "
                 "external dependency stopped the work; 'question' means the conductor's "
-                "own decision is needed (the two differ by who must act). On 'blocked' "
+                "own decision is needed (the two differ by who must act). THIS IS THE "
+                "ONLY THING THAT WAKES YOUR CONDUCTOR: 'blocked', 'question' and 'done' "
+                "wake it, 'progress' does not, and a turn that ends without a report "
+                "wakes nobody — so before you stop, say why you stopped. When you park "
+                "yourself and expect to be resumed, report 'progress' with "
+                "reason='waiting': that records the pause without spending a conductor "
+                "turn, and your silence reads as intended rather than as a result. On "
+                "'blocked' "
                 "or 'question', set reason when only a person can move it: 'approval' "
                 "when a tool approval timed out or is waiting, 'needs_human' when only "
                 "a person can unblock you; leave it unset for a build or service. A "
@@ -389,10 +396,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "reason": {
                         "type": "string",
-                        "enum": ["approval", "needs_human"],
+                        "enum": ["approval", "needs_human", "waiting"],
                         "description": (
-                            "On 'blocked' or 'question': the person this waits on. Refused "
-                            "with 'progress' or 'done'. Each report replaces it."
+                            "Why this report is where you stopped. Each value rides on "
+                            "its own statuses and is refused on any other: 'approval' "
+                            "and 'needs_human' on 'blocked' or 'question', naming the "
+                            "person this waits on; 'waiting' on 'progress', saying you "
+                            "parked yourself and expect to be resumed. Refused on "
+                            "'done'. Each report replaces it."
                         ),
                     },
                 },

@@ -47,7 +47,7 @@ An item is the unit of dispatch. It holds:
 | `fails` | conductor | how many acceptance attempts came back `fail` |
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
 | `status` | worker | `progress` / `done` / `blocked` / `question` |
-| `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
+| `reason` | worker | why the report stopped where it did: `approval` / `needs_human` on `blocked` / `question`, `waiting` on `progress` |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
@@ -164,15 +164,32 @@ One call, four statuses:
 separate values and not one "stuck". A build the worker does not control is
 `blocked`; a choice only the conductor can make is `question`.
 
-**`reason` says when a `blocked` or `question` report waits on a person.**
-`approval` means a tool approval timed out or is waiting, and `needs_human`
-means only a person can unblock it. A wait on a build, service or other item
-carries no reason. It is refused on `progress` and `done`, and every report
-replaces it. When every open item waits on a person (`approval` or
-`needs_human`) and nothing on the ledger changed since the conductor's last
-turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
-the goal popover says it is waiting on you. A worker's new report releases it;
-the conductor's own writes do not.
+**`reason` says why the report stopped where it did.** Each value rides on its
+own statuses and is refused on any other, because a reason and the status under
+it are one fact:
+
+| `reason` | rides on | means |
+|---|---|---|
+| `approval` | `blocked` / `question` | a tool approval timed out or is waiting |
+| `needs_human` | `blocked` / `question` | only a person can unblock it |
+| `waiting` | `progress` | the worker parked itself and expects to be resumed |
+
+A wait on a build, service or other item that moves on its own carries no
+reason, and every report replaces the previous one. When every open item waits
+on a person (`approval` or `needs_human`) and nothing on the ledger changed
+since the conductor's last turn, the conductor's `work-ledger` watch holds: no
+turns, no extension, and the goal popover says it is waiting on you. A worker's
+new report releases it; the conductor's own writes do not.
+
+**A report is the only thing that wakes a conductor.** `blocked`, `question`
+and `done` pull its `work-ledger` loop forward to within seconds. `progress`
+does not, `waiting` included — which is the point of having it: a worker that
+stops to wait records the pause and costs its conductor nothing. A worker turn
+that ends having reported nothing wakes nobody, and neither does a worker's
+session closing. What covers a worker that crashed or went silent is the item's
+own `stale` and `orphaned` flags, read on the conductor's ordinary patrol tick;
+those also cover a worker whose process died with its session still open, which
+no wake ever did.
 
 Reports belong at real milestones, not on a timer.
 `summary` is capped at 500 characters.

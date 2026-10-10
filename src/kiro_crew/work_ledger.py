@@ -82,7 +82,8 @@ from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_FOLD_NAME,
     WORK_ITEM_STATES,
-    WORK_REASON_STATUSES,
+    WORK_REASONS,
+    WORK_REASONS_BY_STATUS,
     WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
@@ -116,6 +117,12 @@ WORKER_STATUSES: frozenset[str] = frozenset(WORK_WORKER_STATUSES)
 
 #: Why a ``blocked`` / ``question`` report is stuck; see :data:`WORK_BLOCKED_REASONS`.
 BLOCKED_REASONS: frozenset[str] = frozenset(WORK_BLOCKED_REASONS)
+
+#: Every value a report's ``reason`` may hold, whatever status carries it; see
+#: :data:`WORK_REASONS`. A value check reads this, and
+#: :data:`WORK_REASONS_BY_STATUS` then pairs the value with its status -- which is
+#: what keeps a stop reason from arriving on a status that means the opposite.
+REASONS: frozenset[str] = frozenset(WORK_REASONS)
 
 #: The statuses from which a report gap still means "the WORKER went quiet", which is
 #: the only thing :func:`is_stale` exists to surface. ``done`` is deliberately absent:
@@ -428,8 +435,9 @@ class WorkItem:
     round: int = 0
     fails: int = 0
     status: str | None = None
-    #: Why a ``blocked`` / ``question`` report is stuck (:data:`BLOCKED_REASONS`), or
-    #: ``None``. Every report replaces it, so one without a reason clears it.
+    #: Why the last report stopped where it did (:data:`REASONS`), or ``None``: a
+    #: ``blocked`` / ``question`` stuck on a person, or a ``progress`` that parked
+    #: itself to wait. Every report replaces it, so one without a reason clears it.
     reason: str | None = None
     summary: str = ""
     artifacts: dict[str, str] = field(default_factory=dict)
@@ -496,7 +504,7 @@ class WorkItem:
             round=_as_int(raw.get("round"), 0),
             fails=_as_int(raw.get("fails"), 0),
             status=status if status in WORKER_STATUSES else None,
-            reason=reason if reason in BLOCKED_REASONS else None,
+            reason=reason if reason in REASONS else None,
             summary=_as_str(raw.get("summary")),
             artifacts=artifacts,
             pr=_finite_int(raw.get("pr")),
@@ -2245,8 +2253,10 @@ def apply_worker_report(
     """Write the fields the WORKER owns: ``status``, ``reason``, ``summary``,
     ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is reachable from here.
 
-    ``reason`` rides only on ``blocked`` / ``question`` and is replaced by every
-    report, so a later report without one clears it.
+    ``reason`` says why the report stopped where it did, and each value rides only on
+    the statuses :data:`WORK_REASONS_BY_STATUS` pairs it with -- ``approval`` and
+    ``needs_human`` on ``blocked`` / ``question``, ``waiting`` on ``progress``. Every
+    report replaces it, so a later report without one clears it.
 
     There is no ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round``
     parameter, so a worker cannot mark itself accepted or widen its own bar — the
@@ -2269,10 +2279,16 @@ def apply_worker_report(
     checked_pr = _require_pr(pr)
     checked_reason: str | None = None
     if reason is not None:
-        checked_reason = _require_choice(reason, BLOCKED_REASONS, "reason", CODE_INVALID_VALUE)
-        if checked_status not in WORK_REASON_STATUSES:
+        checked_reason = _require_choice(reason, REASONS, "reason", CODE_INVALID_VALUE)
+        permitted = WORK_REASONS_BY_STATUS.get(checked_status, ())
+        if checked_reason not in permitted:
+            carriers = ", ".join(
+                status
+                for status, reasons in WORK_REASONS_BY_STATUS.items()
+                if checked_reason in reasons
+            )
             raise WorkLedgerError(
-                "reason is allowed only with status blocked or question",
+                f"reason {checked_reason!r} is allowed only with status {carriers}",
                 code=CODE_INVALID_VALUE,
                 field="reason",
             )

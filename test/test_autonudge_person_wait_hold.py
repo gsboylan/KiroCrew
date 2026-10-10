@@ -460,6 +460,50 @@ def test_reason_is_refused_off_blocked_and_question(status):
         )
 
 
+def test_waiting_rides_on_progress_and_is_stored():
+    """The stop reason a worker writes when it parks itself and expects to be resumed.
+
+    On ``progress`` because it must cost its conductor nothing to hear: the trigger that
+    pulls a conductor's loop forward and the probe that spends its turn both read the
+    waking statuses, and ``progress`` is in neither.
+    """
+    item_id = _item("a")
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="progress", summary="in a wait", reason="waiting"
+    )
+    stored = wl.read_work_item(CONDUCTOR, item_id)
+    assert stored is not None and stored.reason == "waiting"
+    assert stored.to_dict()["reason"] == "waiting"
+    validation.validate_tool_args(
+        {"status": "progress", "summary": "in a wait", "reason": "waiting"},
+        validation.WORK_REPORT_SCHEMA,
+    )
+
+
+@pytest.mark.parametrize("status", ["blocked", "question", "done"])
+def test_waiting_is_refused_off_progress(status):
+    """A reason and its status are one fact. ``waiting`` on a waking status would wake
+    the conductor to be told nobody is needed, and on ``done`` it would claim a pause in
+    a report that says the work is finished."""
+    item_id = _item("a")
+    with pytest.raises(wl.WorkLedgerError) as exc:
+        wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="x", reason="waiting")
+    assert exc.value.code == wl.CODE_INVALID_VALUE
+    with pytest.raises(validation.ValidationError):
+        validation.validate_tool_args(
+            {"status": status, "summary": "x", "reason": "waiting"},
+            validation.WORK_REPORT_SCHEMA,
+        )
+
+
+def test_a_parked_worker_is_not_a_person_wait():
+    """The hold is for an item nobody but a person can move. A worker in a wait is
+    moving itself, so the patrol must keep reading its board."""
+    item_id = _item("a")
+    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="x", reason="waiting")
+    assert probe.person_wait_fingerprint(CONDUCTOR) is None
+
+
 def test_an_unknown_reason_is_refused():
     item_id = _item("a")
     with pytest.raises(wl.WorkLedgerError):
@@ -480,3 +524,6 @@ def test_the_fold_keeps_the_reason_and_a_bare_report_clears_it():
     assert item["reason"] is None, "every report replaces the reason"
     projection._work_apply(item, {**report, "reason": "bogus"}, 3_000)
     assert item["reason"] is None, "the fold keeps only the closed vocabulary"
+    progress = {**report, "status": "progress", "reason": "waiting"}
+    projection._work_apply(item, progress, 4_000)
+    assert item["reason"] == "waiting", "the fold carries a parked worker's stop reason"

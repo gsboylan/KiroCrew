@@ -80,9 +80,9 @@ from kiro_crew.session_ledger import EVENT_KINDS as _LEDGER_EVENT_KINDS
 from kiro_crew.work_vocab import (
     WORK_ACTIONS,
     WORK_ACTORS,
-    WORK_BLOCKED_REASONS,
     WORK_EVENT_KINDS,
     WORK_ITEM_STATES,
+    WORK_REASONS,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
 )
@@ -1911,11 +1911,12 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             Field(
                 "reason",
                 JSON_STRING,
-                enum=WORK_BLOCKED_REASONS,
+                enum=WORK_REASONS,
                 enum_closed=True,
                 note=(
-                    "Why a blocked or question report is stuck, set by report. A report "
-                    "without it clears the item's reason."
+                    "Why the report stopped where it did, set by report: a blocked or "
+                    "question stuck on a person, or a progress that parked itself to "
+                    "wait. A report without it clears the item's reason."
                 ),
             ),
             Field("summary", JSON_STRING, note="The worker's summary, set by report."),
