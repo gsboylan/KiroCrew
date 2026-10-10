@@ -217,7 +217,13 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised again, from 28,665, for ``redaction._credential_search``: the credential
+#: scan finds the JWT-branch start with its own linear finder, which skips a failed
+#: segment run whole, so a long ``eyJ`` run costs linear time, not quadratic. It
+#: returns the same match as ``_CREDENTIAL_PATTERNS.search`` at every step. No
+#: pattern moved and no pass changed.
+_PACKAGE_LINE_BUDGET = 28_721
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
