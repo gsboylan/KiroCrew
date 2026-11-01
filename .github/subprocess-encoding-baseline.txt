@@ -25,7 +25,6 @@
 2 test/test_kiro_prerequisite.py
 5 test/test_papyrus_gitops.py
 1 test/test_perf_boot_path.py
-3 test/test_playwright_cli_installer.py
 3 test/test_pod_e2e_harness_paths.py
 1 test/test_pr_quality_gates.py
 1 test/test_pr_readiness_publish.py
