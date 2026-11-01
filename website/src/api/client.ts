@@ -1629,6 +1629,7 @@ export const api = {
   ...themes.themeList,
   ...config.dashboardRead,
   ...featureDiscovery.featureVideos,
+  ...featureDiscovery.milestones,
   ...config.dashboardWrite,
   ...themes.themeEditing,
   ...voice.voiceSettings,
