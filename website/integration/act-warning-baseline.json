@@ -409,7 +409,6 @@
   "src/test/useAgentSync.recencyOrder.test.tsx",
   "src/test/useBottomTerminal.viewportClamp.test.ts",
   "src/test/useBrowserView.test.tsx",
-  "src/test/useDrawerSwipe.test.ts",
   "src/test/useInstanceShortcuts.test.tsx",
   "src/test/useKeyboardShortcuts.test.tsx",
   "src/test/useOptimisticConfigPaths.test.tsx",
